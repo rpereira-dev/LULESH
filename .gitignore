@@ -1,0 +1,5 @@
+*.o
+tags
+lulesh-omp*
+lulesh-mpc*
+lulesh-oss*
