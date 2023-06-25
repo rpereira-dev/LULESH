@@ -1,3 +1,5 @@
+Original repo: https://github.com/LLNL/LULESH
+
 # Usage
 Usage: ./lulesh [opts] - where [opts] is one or more of:
 - -q              : quiet mode - suppress all stdout
