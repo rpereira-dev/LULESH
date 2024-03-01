@@ -165,8 +165,25 @@ Additional BSD Notice
 # include <mpi.h>
 #endif
 
-# define TASK_SET_COLOR(...)
-# define TASK_SET_LABEL(...)
+# if TRACE_LABEL
+extern "C" {
+    void ompt_set_task_name(const char * name);
+};
+#  define TASK_SET_LABEL(...)                       \
+    do {                                            \
+        char buf[512];                              \
+        snprintf(buf, sizeof(buf), __VA_ARGS__);    \
+        ompt_set_task_name(buf);                    \
+    } while (0)
+# else
+#  define TASK_SET_LABEL(...)
+# endif
+
+ # if TRACE_COLOR
+ #  define TASK_SET_COLOR(...)
+ # else
+ #  define TASK_SET_COLOR(...) // TODO
+ # endif
 
 # if USE_MPI && USE_OMPI
 #  define TASK_SHARED stdout, ompi_mpi_comm_world, ompi_mpi_op_min, ompi_mpi_float, ompi_mpi_double
@@ -4018,6 +4035,8 @@ int main(int argc, char *argv[])
     myRank = 0;
 #endif
 
+    double tp0 = omp_get_wtime();
+
     /* Set defaults that can be overridden by command line opts */
     opts.its = 9999999;
     opts.nx  = 30;
@@ -4060,6 +4079,7 @@ int main(int argc, char *argv[])
     }
     # pragma omp parallel
     {
+        printf("OpenMP Thread %d on cpu %d\n", omp_get_thread_num(), sched_getcpu());
         # pragma omp single
         {
 # if USE_MPI && TRACE
@@ -4211,6 +4231,8 @@ int main(int argc, char *argv[])
             }
         } /* single */
     } /* parallel */
+    double tpf = omp_get_wtime();
+    printf("Total parallel time = %lf\n", tpf - tp0);
 
 #if USE_MPI
     /* Barrier to avoid 'Finalize' timeout */

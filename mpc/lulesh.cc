@@ -4168,7 +4168,7 @@ int main(int argc, char *argv[])
                 //for(Int_t i = 0; i < domain->numReg(); i++)
                 //    std::cout << "region" << i + 1<< "size" << domain->regElemSize(i) <<std::endl;
                 if (myRank == 0) printf("[%d] Initial Origin Energy : %12.6e \n", myRank, domain->e(0));
-                if (opts.persistentTasks) mpc_omp_persistent_region_begin();
+//                if (opts.persistentTasks) mpc_omp_persistent_region_begin();
                 for (iter = 0 ; iter < opts.its && !cancelled ; ++iter)
                 {
                     double t0 = lulesh_timer();
@@ -4184,12 +4184,12 @@ int main(int argc, char *argv[])
                         double dt = lulesh_timer() - t0;
                         if (iter == 0)  tgraph0 = dt;
                         if (iter >= 0)  tgraph += dt;
-                        mpc_omp_persistent_region_iterate();
+//                        mpc_omp_persistent_region_iterate();
                     }
                 }
                 if (opts.persistentTasks)
                 {
-                    mpc_omp_persistent_region_end();
+//                    mpc_omp_persistent_region_end();
                     if (myRank == 0) printf("Graph 1st iteration generated in %lf s.\n", tgraph0);
                 }
                 else

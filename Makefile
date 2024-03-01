@@ -1,10 +1,10 @@
 # Common code
 COMMON_CFLAGS=-Wall -Wextra -I common/ -O3 -g
-COMMON_CFLAGS+=-Wno-unused-parameter
+COMMON_CFLAGS+=-Wno-unused-parameter -Wno-reserved-user-defined-literal
 #COMMON_CFLAGS+=-DDRYRUN
-#COMMON_CFLAGS+=-DTRACE
-#COMMON_CFLAGS+=-DTRACE_COLOR
-#COMMON_CFLAGS+=-DTRACE_LABEL
+#COMMON_CFLAGS+=-DTRACE=1
+#COMMON_CFLAGS+=-DTRACE_COLOR=1
+COMMON_CFLAGS+=-DTRACE_LABEL=1
 #COMMON_CFLAGS+=-Wno-unused-variable
 #COMMON_CFLAGS+=-Wno-comment -Wno-pointer-arith
 #COMMON_CFLAGS+=-Wno-cast-function-type
@@ -13,7 +13,8 @@ COMMON_CFLAGS+=-Wno-unused-parameter
 
 COMMON_LDFLAGS=
 #COMMON_LDFLAGS+=-L/ccc/work/cont001/ocre/pereirar/these/tools/mpc/task/mpi/ -lmpcmpitrace
-#COMMON_LDFLAGS=-lstdc++
+#COMMON_LDFLAGS+=-lstdc++
+COMMON_LDFLAGS+=-L $(MPCT)/lib -lmpct_ompt
 
 COMMON_SRC=common/lulesh-init.cc common/lulesh-util.cc common/lulesh-viz.cc common/lulesh-comm-cases.cc
 
@@ -104,8 +105,9 @@ omp-for-mpi: $(OMP_FOR_MPI_FOR_TARGET)
 # ---------- OMP TASK ---------- #
 ##################################
 #OMP_T_CXX=mpc_cxx -cc=g++
-OMP_T_CXX=g++
+#OMP_T_CXX=g++
 #OMP_T_CXX=clang++
+OMP_T_CXX=mpc_cxx -cc=clang++
 
 OMP_T_CFLAGS=-DUSE_MPI=0 -DUSE_MPIX=0 -DUSE_MPC=0 -fopenmp
 OMP_T_LDFLAGS=
@@ -126,7 +128,7 @@ omp-task: $(OMP_T_TARGET)
 ##################################
 # ------------ MPC ------------- #
 ##################################
-MPC_CXX=mpc_cxx -cc=g++
+MPC_CXX=mpc_cxx -cc=clang++
 
 MPC_CFLAGS=-DUSE_MPI=0 -DUSE_MPIX=0 -DUSE_MPC=1 -fopenmp
 #MPC_CFLAGS+=-stdlib=libc++ -Wl,rpath,/ccc/work/cont001/sanl_ipc/sanl_ipc/install/llvm/13.x/lib
