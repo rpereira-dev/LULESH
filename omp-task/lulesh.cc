@@ -4098,7 +4098,7 @@ int main(int argc, char *argv[])
             TASK_SET_COLOR(iter);
             TASK_SET_LABEL("InitMeshDecomp");
             Int_t col, row, plane, side;
-            # pragma omp task if(0) default(shared)
+            // # pragma omp task if(0) default(shared)
             {
                 InitMeshDecomp(numRanks, myRank, &col, &row, &plane, &side);
             }
@@ -4108,7 +4108,7 @@ int main(int argc, char *argv[])
             // Build the main data structure and initialize it
             TASK_SET_COLOR(iter);
             TASK_SET_LABEL("Domain instanciation");
-            # pragma omp task if(0) default(shared)
+            //# pragma omp task if(0) default(shared)
             {
                 domain = new Domain(numRanks, col, row, plane, opts.nx,
                     side, opts.numReg, opts.balance, opts.cost,
@@ -4122,7 +4122,7 @@ int main(int argc, char *argv[])
 
             TASK_SET_COLOR(iter);
             TASK_SET_LABEL("allocate");
-            # pragma omp task default(none) firstprivate(domain) if(0)
+            //# pragma omp task default(none) firstprivate(domain) if(0)
             {
                 // preallocate memory used in various routines
                 allocate(domain);
@@ -4130,7 +4130,7 @@ int main(int argc, char *argv[])
 
             TASK_SET_COLOR(iter);
             TASK_SET_LABEL("init_deps");
-            # pragma omp task default(none) firstprivate(domain) if(0)
+            // # pragma omp task default(none) firstprivate(domain) if(0)
             {
                 init_deps(domain);
             }
