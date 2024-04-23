@@ -2974,7 +2974,7 @@ void CalcCourantConstraintForElems(Domain * domain, Index_t r)
             shared(dt_reduction_courant, EBS)                       \
             depend(in: domain->m_dtcourant)                         \
             DEPEND_INOUTSET(dt_courant_deps[r] + 2*(b/EBS)+0, 1)    \
-            DEPEND_INOUTSET(dt_courant_deps[r] + 2*(b/EBS)+1, 1)
+            DEPEND_IN(dt_courant_deps[r] + 2*(b/EBS)+1, 1)
         {
             const Index_t * regElemlist = domain->regElemlist(r);
             const Real_t qqc            = domain->qqc();
@@ -3471,9 +3471,9 @@ static void init_deps(Domain * domain)
     const Real_t * ydd = domain->m_ydd.data();
     const Real_t * zdd = domain->m_zdd.data();
 
-    const Real_t * ss       = domain->m_ss.data();
-    const Real_t * vdov     = domain->m_vdov.data();
-    const Real_t * arealg   = domain->m_arealg.data();
+    const Real_t * domain_ss        = domain->m_ss.data();
+    const Real_t * domain_vdov      = domain->m_vdov.data();
+    const Real_t * domain_arealg    = domain->m_arealg.data();
 
     // elem -> node loop
     const Index_t numElem = domain->numElem();
@@ -3741,11 +3741,11 @@ static void init_deps(Domain * domain)
                 for (std::map<Index_t, bool>::iterator it = blocks.begin(); it != blocks.end(); ++it)
                 {
                     const Index_t index = it->first;
-                    in_courant->addrs[3 * j + 0] = (int *) (ss       + index);
-                    in_courant->addrs[3 * j + 1] = (int *) (vdov     + index);
-                    in_courant->addrs[3 * j + 2] = (int *) (arealg   + index);
+                    in_courant->addrs[3 * j + 0] = (int *) (domain_ss     + index);
+                    in_courant->addrs[3 * j + 1] = (int *) (domain_vdov   + index);
+                    in_courant->addrs[3 * j + 2] = (int *) (domain_arealg + index);
 
-                    in_hydro->addrs[j] = (int *) (vdov + index);
+                    in_hydro->addrs[j] = (int *) (domain_vdov + index);
 
                     ++j;
                 }
@@ -3764,7 +3764,6 @@ static void init_deps(Domain * domain)
     // OUT : qq[i], ql[i]
     CalcMonotonicQRegionForElems_deps = (task_dependency_t **) malloc(sizeof(task_dependency_t *) * numReg);
 
-    const Real_t * domain_vdov      = domain->m_vdov.data();        (void) domain_vdov;
     const Real_t * domain_qq        = domain->m_qq.data();          (void) domain_qq;
 
     for (Index_t r = 0 ; r < numReg ; ++r)
