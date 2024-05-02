@@ -275,12 +275,49 @@ dt_reduction_t ** dt_reduction_hydro;
  * we saw up to 50% speed gain on graph generation, and ~40% of overall performance gain.
  */
 
-typedef struct task_dependency_s
+typedef struct  dependences_s
 {
-    void ** addrs;
-    unsigned int addrs_size;
-    int type;
-} task_dependency_t;
+    omp_depend_t * objs;
+    unsigned int n;
+}               dependences_t;
+
+static struct {
+    dependences_t * deltatime;
+    dependences_t * dthydro;
+    dependences_t * dtcourant;
+    dependences_t * e;
+    dependences_t * sigxx;
+} deps;
+
+
+
+#define STRINGIFY(a) #a
+# define DEPOBJ_UPDATE(D, T)                                            \
+    do {                                                                \
+        for (unsigned int i = 0 ; i < deps.D.n ; ++i)                   \
+        {                                                               \
+            _Pragma(STRINGIFY(omp depobj(deps.D.objs[i]) update(T)))    \
+        }                                                               \
+    } while (0);
+
+# define DEPS_ALLOC(D, N)                                               \
+    do {                                                                \
+        deps.D = (dependences_t *) malloc(sizeof(dependences_t) * N);   \
+    } while (0);
+
+# define DEPOBJ_ALLOC(D, N)                                                 \
+    do {                                                                    \
+        deps.D.n = N;                                                       \
+        deps.D.objs = (omp_depend_t *) malloc(sizeof(omp_depend_t) * N);    \
+    } while (0);
+
+# define DEPOBJ_SET(D, N, ...)                                              \
+    do {                                                                    \
+        _Pragma(STRINGIFY(omp depobj(deps.D.objs[N]) depend(__VA_ARGS__)))  \
+    } while (0);
+
+
+# define DEPEND_OBJ(D) depend(iterator(_i=0:deps.D.n), depobj: deps.D.objs[_i])
 
 typedef enum task_dep_type_e
 {
@@ -293,33 +330,713 @@ typedef enum task_dep_type_e
     TASK_DEP_COUNT = 6
 } task_dep_type_t;
 
+typedef struct  task_dependency_s
+{
+    void ** addrs;
+    unsigned int addrs_size;
+    int type;
+}               task_dependency_t;
+
 static task_dependency_t * dependencies_domain_x_y_z;
 static task_dependency_t * dependencies_fx_fy_fz_elem;
-
 static task_dependency_t * dependencies_domain_xd_yd_zd;
 static task_dependency_t * dependencies_fx_fy_fz_elem_FBH;
-
 static task_dependency_t * dependencies_bc_xdd;
 static task_dependency_t * dependencies_bc_ydd;
 static task_dependency_t * dependencies_bc_zdd;
-
 static task_dependency_t ** dt_courant_deps;
 static task_dependency_t ** dt_hydro_deps;
-
 static task_dependency_t ** CalcMonotonicQRegionForElems_deps;
-
 static task_dependency_t ** EvalEOSForElems_deps_1;
 static task_dependency_t ** EvalEOSForElems_deps_2;
 static task_dependency_t ** vnew_in_deps;
-
 static task_dependency_t ** CalcSoundSpeedForElems_deps;
 
-# define DEPEND_IN(D, STEP)  depend(iterator(_i=0:(D)->addrs_size:STEP), in: ((char *)(D)->addrs[_i])[0])
-# define DEPEND_OUT(D, STEP) depend(iterator(_i=0:(D)->addrs_size:STEP), out: ((char *)(D)->addrs[_i])[0])
+# define DEPEND_IN(D, STEP)       depend(iterator(_i=0:(D)->addrs_size:STEP), in: ((char *)(D)->addrs[_i])[0])
+# define DEPEND_OUT(D, STEP)      depend(iterator(_i=0:(D)->addrs_size:STEP), out: ((char *)(D)->addrs[_i])[0])
 # define DEPEND_INOUTSET(D, STEP) depend(iterator(_i=0:(D)->addrs_size:STEP), inoutset: ((char *)(D)->addrs[_i])[0])
 
-# define TASK_COMPUTE(...)
-# define TASK_COMM(...)
+/** DEPENDENCES MANAGEMENT */
+
+static void init_deps(Domain * domain)
+{
+    // set single field dependency objects
+    DEPS_ALLOC(deltatime, 1);
+    DEPOBJ_ALLOC(deltatime[0], 1);
+    DEPOBJ_SET(deltatime[0], 0, in: domain->m_deltatime);
+
+    DEPS_ALLOC(dtcourant, 1);
+    DEPOBJ_ALLOC(dtcourant[0], 1);
+    DEPOBJ_SET(dtcourant[0], 0, in: domain->m_dtcourant);
+
+    DEPS_ALLOC(dthydro, 1);
+    DEPOBJ_ALLOC(dthydro[0], 1);
+    DEPOBJ_SET(dthydro[0], 0, in: domain->m_dthydro);
+
+    // dimensions
+    const Index_t numElem = domain->numElem();
+    const Index_t n_elem_blocks = numElem/EBS + (numElem % EBS != 0);
+
+    // data pointers
+    const Real_t * x = domain->m_x.data();
+    const Real_t * y = domain->m_y.data();
+    const Real_t * z = domain->m_z.data();
+    const Real_t * xd = domain->m_xd.data();
+    const Real_t * yd = domain->m_yd.data();
+    const Real_t * zd = domain->m_zd.data();
+
+    const Real_t * xdd = domain->m_xdd.data();
+    const Real_t * ydd = domain->m_ydd.data();
+    const Real_t * zdd = domain->m_zdd.data();
+
+    const Real_t * domain_ss        = domain->m_ss.data();
+    const Real_t * domain_vdov      = domain->m_vdov.data();
+    const Real_t * domain_arealg    = domain->m_arealg.data();
+
+    const Real_t * domain_e = domain->m_e.data();
+
+    // allocate dependences objects
+    DEPS_ALLOC(e,     n_elem_blocks);
+    DEPS_ALLOC(sigxx, n_elem_blocks);
+    DEPS_ALLOC(xyz, n_elem_blocks);
+
+    // set dependences object
+    for (Index_t b = 0; b < numElem ; b += EBS)
+    {
+        TASK_SET_COLOR(iter);
+        TASK_SET_LABEL("init");
+        # pragma omp task
+        {
+            // regular dependences
+            DEPOBJ_ALLOC(e[b/EBS], 1);
+            DEPOBJ_SET(e[b/EBS], 0, in: domain_e[b]);
+
+            DEPOBJ_ALLOC(sigxx[b/EBS], 1);
+            DEPOBJ_SET(sigxx[b/EBS], 0, in: sigxx[b]);
+
+            // irregular dependences
+            std::map<Index_t, bool> blocks;
+
+            Index_t start = b;
+            Index_t end = MIN(start + EBS, numElem);
+            for (Index_t k = start ; k < end ; ++k)
+            {
+                const Index_t * const elemtonode = domain->nodelist(k);
+                int i;
+                for (i = 0 ; i < 8 ; ++i)
+                {
+                    Index_t index = elemtonode[i] / NBS * NBS;
+                    if (blocks.count(index) == 0)
+                        blocks[index] = true;
+                }
+            }
+
+            // allocate dependency array
+            unsigned int n = blocks.size();
+            DEPOBJ_ALLOC(x[b/EBS], n);
+            DEPOBJ_ALLOC(y[b/EBS], n);
+            DEPOBJ_ALLOC(z[b/EBS], n);
+
+            for (int i = 0 ; i < n ; ++i)
+            FILL
+
+            DEPOBJ_SET(xyz[b/EBS], 0, iterator(i...), in: x[i])
+            DEPOBJ_SET(xyz[b/EBS], 1, iterator(i...), in: y[i])
+            DEPOBJ_SET(xyz[b/EBS], 2, iterator(i...), in: z[i])
+
+            dependency_domain_x_y_z->type             = TASK_DEP_IN;
+            dependency_domain_x_y_z->addrs_size       = 3 * blocks.size();
+            dependency_domain_x_y_z->addrs            = (void **)malloc(sizeof(void *) * dependency_domain_x_y_z->addrs_size);
+
+            task_dependency_t * dependency_domain_xd_yd_zd = dependencies_domain_xd_yd_zd + (b/EBS);
+            dependency_domain_xd_yd_zd->type        = TASK_DEP_IN;
+            dependency_domain_xd_yd_zd->addrs_size  = 3 * blocks.size();
+            dependency_domain_xd_yd_zd->addrs       = (void **)malloc(sizeof(void *) * dependency_domain_xd_yd_zd->addrs_size);
+
+
+        }
+    }
+
+
+    // elem -> node loop
+
+    dependencies_domain_x_y_z       = (task_dependency_t *) malloc(sizeof(task_dependency_t) * n_elem_blocks);
+    dependencies_domain_xd_yd_zd    = (task_dependency_t *) malloc(sizeof(task_dependency_t) * n_elem_blocks);
+
+    for (Index_t b = 0; b < numElem ; b += EBS)
+    {
+        # pragma omp task
+        {
+
+
+
+            // copy unique blocks to the dependency array
+            unsigned int j = 0;
+            for (std::map<Index_t, bool>::iterator it = blocks.begin(); it != blocks.end(); ++it)
+            {
+                const Index_t index = it->first;
+                dependency_domain_x_y_z->addrs[3 * j + 0]       = (int *)(x + index);
+                dependency_domain_x_y_z->addrs[3 * j + 1]       = (int *)(y + index);
+                dependency_domain_x_y_z->addrs[3 * j + 2]       = (int *)(z + index);
+                dependency_domain_xd_yd_zd->addrs[3 * j + 0]    = (int *)(xd + index);
+                dependency_domain_xd_yd_zd->addrs[3 * j + 1]    = (int *)(yd + index);
+                dependency_domain_xd_yd_zd->addrs[3 * j + 2]    = (int *)(zd + index);
+                j += 1;
+            }
+            assert(3 * j == dependency_domain_x_y_z->addrs_size);
+            assert(3 * j == dependency_domain_xd_yd_zd->addrs_size);
+        }
+    }
+
+    // node -> elem loop
+    const Index_t numNode       = domain->numNode();
+    const Index_t n_node_blocks = numNode/NBS + (numNode % NBS != 0);
+
+    dependencies_fx_fy_fz_elem     = (task_dependency_t *) malloc(sizeof(task_dependency_t) * n_node_blocks);
+    dependencies_fx_fy_fz_elem_FBH = (task_dependency_t *) malloc(sizeof(task_dependency_t) * n_node_blocks);
+
+    for (Index_t b = 0; b < numNode ; b += NBS)
+    {
+        TASK_SET_COLOR(iter);
+        TASK_SET_LABEL("init");
+        # pragma omp task
+        {
+            std::map<Index_t, bool> blocks;
+            Index_t start = b;
+            Index_t end = MIN(start + NBS, numNode);
+            for (Index_t gnode = start ; gnode < end ; ++gnode)
+            {
+                Index_t count = domain->nodeElemCount(gnode) ;
+                Index_t * cornerList = domain->nodeElemCornerList(gnode);
+                for (Index_t i = 0 ; i < count ; ++i)
+                {
+                    Index_t index = cornerList[i] / (8 * EBS) * (8 * EBS);
+                    if (blocks.count(index) == 0) blocks[index] = true;
+                }
+            }
+
+            task_dependency_t * dependency_fx_fy_fz_elem = dependencies_fx_fy_fz_elem + (b/NBS);
+            dependency_fx_fy_fz_elem->type         = TASK_DEP_IN;
+            dependency_fx_fy_fz_elem->addrs_size   = 1 * blocks.size();
+            dependency_fx_fy_fz_elem->addrs        = (void **)malloc(sizeof(void *) * dependency_fx_fy_fz_elem->addrs_size);
+
+            task_dependency_t * dependency_fx_fy_fz_elem_FBH = dependencies_fx_fy_fz_elem_FBH + (b/NBS);
+            dependency_fx_fy_fz_elem_FBH->type        = TASK_DEP_IN;
+            dependency_fx_fy_fz_elem_FBH->addrs_size  = 1 * blocks.size();
+            dependency_fx_fy_fz_elem_FBH->addrs       = (void **)malloc(sizeof(void *) * dependency_fx_fy_fz_elem_FBH->addrs_size);
+
+            unsigned int j = 0;
+            for (std::map<Index_t, bool>::iterator it = blocks.begin(); it != blocks.end(); ++it)
+            {
+                const Index_t index = it->first;
+
+                dependency_fx_fy_fz_elem->addrs[j+0] = (int *)(fx_elem + index);
+                dependency_fx_fy_fz_elem_FBH->addrs[j+0] = (int *)(fx_elem_FBH + index);
+
+                j += 1;
+            }
+            assert(j == dependency_fx_fy_fz_elem->addrs_size);
+            assert(j == dependency_fx_fy_fz_elem_FBH->addrs_size);
+        }
+    }
+
+    // Boundary nodes dependencies
+    const Index_t sizeX = domain->sizeX();
+    const Index_t numNodeBC = (sizeX+1)*(sizeX+1) ;
+    const Index_t n_blocks_node_bc = numNodeBC / NBS + (numNodeBC % NBS != 0);
+
+    dependencies_bc_xdd  = (task_dependency_t *) malloc(sizeof(task_dependency_t) * n_blocks_node_bc);
+    dependencies_bc_ydd  = (task_dependency_t *) malloc(sizeof(task_dependency_t) * n_blocks_node_bc);
+    dependencies_bc_zdd  = (task_dependency_t *) malloc(sizeof(task_dependency_t) * n_blocks_node_bc);
+
+
+    for (Index_t b = 0; b < numNodeBC ; b += NBS)
+    {
+        TASK_SET_COLOR(iter);
+        TASK_SET_LABEL("init");
+        # pragma omp task
+        {
+            std::map<Index_t, bool> blocks_x, blocks_y, blocks_z;
+            Index_t start = b;
+            Index_t end = MIN(start + NBS, numNodeBC);
+            for (Index_t i = start ; i < end ; ++i)
+            {
+                if (!domain->symmXempty())
+                {
+                    const Index_t index_x = domain->symmX(i) / NBS * NBS;
+                    if (blocks_x.count(index_x) == 0) blocks_x[index_x] = true;
+                }
+
+                if (!domain->symmYempty())
+                {
+                    const Index_t index_y = domain->symmY(i) / NBS * NBS;
+                    if (blocks_y.count(index_y) == 0) blocks_y[index_y] = true;
+                }
+
+                if (!domain->symmZempty())
+                {
+                    const Index_t index_z = domain->symmZ(i) / NBS * NBS;
+                    if (blocks_z.count(index_z) == 0) blocks_z[index_z] = true;
+                }
+            }
+
+            task_dependency_t * dependency_bc_xdd = dependencies_bc_xdd + (b/NBS);
+            dependency_bc_xdd->type         = TASK_DEP_INOUTSET;
+            dependency_bc_xdd->addrs_size   = blocks_x.size();
+            dependency_bc_xdd->addrs        = (void **) malloc(sizeof(void *) * blocks_x.size());
+
+            task_dependency_t * dependency_bc_ydd = dependencies_bc_ydd + (b/NBS);
+            dependency_bc_ydd->type         = TASK_DEP_INOUTSET;
+            dependency_bc_ydd->addrs_size   = blocks_y.size();
+            dependency_bc_ydd->addrs        = (void **) malloc(sizeof(void *) * blocks_y.size());
+
+            task_dependency_t * dependency_bc_zdd = dependencies_bc_zdd + (b/NBS);
+            dependency_bc_zdd->type         = TASK_DEP_INOUTSET;
+            dependency_bc_zdd->addrs_size   = blocks_z.size();
+            dependency_bc_zdd->addrs        = (void **) malloc(sizeof(void *) * blocks_z.size());
+
+            unsigned int j;
+
+            j = 0;
+            for (std::map<Index_t, bool>::iterator it = blocks_x.begin(); it != blocks_x.end(); ++it)
+            {
+                dependency_bc_xdd->addrs[j++] = (int *) (xdd + it->first);
+            }
+            assert(j == dependency_bc_xdd->addrs_size);
+
+            j = 0;
+            for (std::map<Index_t, bool>::iterator it = blocks_y.begin(); it != blocks_y.end(); ++it)
+            {
+                dependency_bc_ydd->addrs[j++] = (int *) (ydd + it->first);
+            }
+            assert(j == dependency_bc_ydd->addrs_size);
+
+            j = 0;
+            for (std::map<Index_t, bool>::iterator it = blocks_z.begin(); it != blocks_z.end(); ++it)
+            {
+                dependency_bc_zdd->addrs[j++] = (int *) (zdd + it->first);
+            }
+            assert(j == dependency_bc_zdd->addrs_size);
+        }
+    }
+
+    // dt time courant and hydro deps
+    const Index_t numReg = domain->numReg();
+    const size_t size = sizeof(task_dependency_t *) * numReg;
+    dt_courant_deps = (task_dependency_t **) malloc(size);
+    dt_hydro_deps = (task_dependency_t **) malloc(size);
+    for (Index_t r = 0 ; r < numReg ; ++r)
+    {
+        const Index_t regElemSize   = domain->regElemSize(r);
+        const Index_t nblocks       = regElemSize / EBS + (regElemSize % EBS != 0);
+        const size_t size = sizeof(task_dependency_t) * 2*nblocks;
+        dt_courant_deps[r] = (task_dependency_t *) malloc(size);
+        dt_hydro_deps[r] = (task_dependency_t *) malloc(size);
+
+        for (Index_t b = 0 ; b < regElemSize ; b += EBS)
+        {
+            TASK_SET_COLOR(iter);
+            TASK_SET_LABEL("init");
+            # pragma omp task
+            {
+                std::map<Index_t, bool> blocks;
+
+                task_dependency_t * inoutset_courant = dt_courant_deps[r] + 2*(b/EBS)+0;
+                task_dependency_t * in_courant       = dt_courant_deps[r] + 2*(b/EBS)+1;
+
+                task_dependency_t * inoutset_hydro = dt_hydro_deps[r] + 2*(b/EBS)+0;
+                task_dependency_t * in_hydro       = dt_hydro_deps[r] + 2*(b/EBS)+1;
+
+                // reduction on 'dtcourant' and 'dthydro' per block
+                inoutset_courant->type          = TASK_DEP_INOUTSET;
+                inoutset_courant->addrs_size    = 1;
+                inoutset_courant->addrs         = (void **) malloc(sizeof(void *) * 1);
+                inoutset_courant->addrs[0]      = (int *) &(dt_reduction_courant[r]);
+
+                inoutset_hydro->type            = TASK_DEP_INOUTSET;
+                inoutset_hydro->addrs_size      = 1;
+                inoutset_hydro->addrs           = (void **) malloc(sizeof(void *) * 1);
+                inoutset_hydro->addrs[0]        = (int *) &(dt_reduction_hydro[r]);
+
+                // in dependencies
+                // IN : domain->ss(index)
+                // IN : domain->vdov(index)
+                // IN : domain->arealg(index)
+                Index_t start = b;
+                Index_t end = MIN(start + EBS, regElemSize);
+                for (Index_t i = start ; i < end ; ++i)
+                {
+                    const Index_t * regElemlist = domain->regElemlist(r);
+                    const Index_t index = regElemlist[i] / EBS * EBS;
+                    if (blocks.count(index) == 0)   blocks[index] = true;
+                }
+
+                in_courant->type        = TASK_DEP_IN;
+                in_courant->addrs_size  = 3 * blocks.size();
+                in_courant->addrs       = (void **) malloc(sizeof(void *) * in_courant->addrs_size);
+
+                in_hydro->type          = TASK_DEP_IN;
+                in_hydro->addrs_size    = 1 * blocks.size();
+                in_hydro->addrs         = (void **) malloc(sizeof(void *) * in_hydro->addrs_size);
+
+                unsigned int j = 0;
+                for (std::map<Index_t, bool>::iterator it = blocks.begin(); it != blocks.end(); ++it)
+                {
+                    const Index_t index = it->first;
+                    in_courant->addrs[3 * j + 0] = (int *) (domain_ss     + index);
+                    in_courant->addrs[3 * j + 1] = (int *) (domain_vdov   + index);
+                    in_courant->addrs[3 * j + 2] = (int *) (domain_arealg + index);
+
+                    in_hydro->addrs[j] = (int *) (domain_vdov + index);
+
+                    ++j;
+                }
+                assert(3 * j == in_courant->addrs_size);
+                assert(    j ==   in_hydro->addrs_size);
+            }
+        }
+    }
+
+    // CalcMonotonicQRegionForElems
+    // IN : delv_xi(i),   delv_xi(lxim(i)),     delv_xi(lxip(i))
+    // IN : delv_eta(i),  delv_eta(letam(i)),   delv_eta(letap(i))
+    // IN : delv_zeta(i), delv_zeta(lzetam(i)), delv_zeta(lzetap(i))
+    // IN : delx_xi(i), delx_eta(i), delx_zeta(i)
+    // IN : vdov(i), volo(i), vnew[i]
+    // OUT : qq[i], ql[i]
+    CalcMonotonicQRegionForElems_deps = (task_dependency_t **) malloc(sizeof(task_dependency_t *) * numReg);
+
+    const Real_t * domain_qq        = domain->m_qq.data();          (void) domain_qq;
+
+    for (Index_t r = 0 ; r < numReg ; ++r)
+    {
+        Index_t regElemSize   = domain->regElemSize(r);
+        const Index_t nblocks = regElemSize / EBS + (regElemSize % EBS != 0);
+        CalcMonotonicQRegionForElems_deps[r] = (task_dependency_t *) malloc(sizeof(task_dependency_t) * 2*nblocks);
+        for (Index_t b = 0; b < regElemSize ; b += EBS)
+        {
+            TASK_SET_COLOR(iter);
+            TASK_SET_LABEL("init");
+            # pragma omp task
+            {
+                std::map<Index_t, bool> blocks;
+                std::map<Index_t, bool> blocks_delv_xi;
+                std::map<Index_t, bool> blocks_delv_eta;
+                std::map<Index_t, bool> blocks_delv_zeta;
+
+                Index_t start = b;
+                Index_t end = MIN(start + EBS, regElemSize);
+                for (Index_t ielem = start ; ielem < end ; ++ielem)
+                {
+                    Index_t i = domain->regElemlist(r, ielem);
+                    Index_t i_block = i / EBS * EBS;
+
+                    // IN : delx_xi(i), delx_eta(i), delx_zeta(i)
+                    // IN : domain->vdov(i), vnew[i]
+                    // IN : domain->delv_xi(i), domain->delv_eta(i), domain->delv_zeta(i)
+                    // IN : domain->delx_xi(i), domain->delx_eta(i), domain->delx_zeta(i)
+                    // OUT : domain->qq(i), domain->ql(i)
+                    if (blocks.count(i_block) == 0) blocks[i_block] = true;
+
+                    // IN : maybe domain->delv_xi(domain->lxim(i))
+                    // IN : maybe domain->delv_xi(domain->lxip(i))
+                    // IN : maybe domain->delv_eta(domain->letam(i))
+                    // IN : maybe domain->delv_eta(domain->letap(i))
+                    // IN : maybe domain->delv_zeta(domain->lzetam(i))
+                    // IN : maybe domain->delv_zeta(domain->lzetap(i))
+                    Int_t bcMask = domain->elemBC(i) ;
+                    switch (bcMask & XI_M)
+                    {
+                        case XI_M_COMM:
+                        case 0:
+                        {
+                            Index_t index = domain->lxim(i) / EBS * EBS;
+                            if (blocks_delv_xi.count(index) == 0) blocks_delv_xi[index] = true;
+                            break ;
+                        }
+                        default: break;
+                    }
+
+                    switch (bcMask & XI_P)
+                    {
+                        case XI_P_COMM:
+                        case 0:
+                        {
+                            Index_t index = domain->lxip(i) / EBS * EBS;
+                            if (blocks_delv_xi.count(index) == 0) blocks_delv_xi[index] = true;
+                            break ;
+                        }
+                        default: break;
+                    }
+
+                    switch (bcMask & ETA_M)
+                    {
+                        case ETA_M_COMM:
+                        case 0:
+                        {
+                            Index_t index = domain->letam(i) / EBS * EBS;
+                            if (blocks_delv_eta.count(index) == 0) blocks_delv_eta[index] = true;
+                            break ;
+                        }
+                        default: break;
+                    }
+
+                    switch (bcMask & ETA_P)
+                    {
+                        case ETA_P_COMM:
+                        case 0:
+                        {
+                            Index_t index = domain->letap(i) / EBS * EBS;
+                            if (blocks_delv_eta.count(index) == 0) blocks_delv_eta[index] = true;
+                            break ;
+                        }
+                        default: break;
+                    }
+
+                    switch (bcMask & ZETA_M)
+                    {
+                        case ZETA_M_COMM:
+                        case 0:
+                        {
+                            Index_t index = domain->lzetam(i) / EBS * EBS;
+                            if (blocks_delv_zeta.count(index) == 0) blocks_delv_zeta[index] = true;
+                            break ;
+                        }
+                        default: break;
+                    }
+
+                    switch (bcMask & ZETA_P)
+                    {
+                        case ZETA_P_COMM:
+                        case 0:
+                        {
+                            Index_t index = domain->lzetap(i) / EBS * EBS;
+                            if (blocks_delv_zeta.count(index) == 0) blocks_delv_zeta[index] = true;
+                            break ;
+                        }
+                        default: break;
+                    }
+                } /* for ielem */
+
+                task_dependency_t * inoutset = CalcMonotonicQRegionForElems_deps[r] + 2*(b/EBS)+0;
+                inoutset->type       = TASK_DEP_INOUTSET;
+                inoutset->addrs_size = 1 * blocks.size();
+                inoutset->addrs      = (void **) malloc(sizeof(void *) * inoutset->addrs_size);
+
+                task_dependency_t * in  = CalcMonotonicQRegionForElems_deps[r] + 2*(b/EBS)+1;
+                in->type        = TASK_DEP_IN;
+                in->addrs_size  = 8 * blocks.size()
+                                    + blocks_delv_xi.size()
+                                    + blocks_delv_eta.size()
+                                    + blocks_delv_zeta.size();
+                in->addrs       = (void **) malloc(sizeof(void *) * in->addrs_size);
+
+                unsigned int j1 = 0;
+                unsigned int j2 = 0;
+                for (std::map<Index_t, bool>::iterator it = blocks.begin(); it != blocks.end(); ++it)
+                {
+                    const Index_t index = it->first;
+
+                    in->addrs[j1++] = (int *) (domain->m_delv_xi    + index);
+                    in->addrs[j1++] = (int *) (domain->m_delv_eta   + index);
+                    in->addrs[j1++] = (int *) (domain->m_delv_zeta  + index);
+
+                    in->addrs[j1++] = (int *) (domain->m_delx_xi    + index);
+                    in->addrs[j1++] = (int *) (domain->m_delx_eta   + index);
+                    in->addrs[j1++] = (int *) (domain->m_delx_zeta  + index);
+
+                    in->addrs[j1++] = (int *) (domain_vdov       + index);
+                    in->addrs[j1++] = (int *) (vnew              + index);
+
+                    inoutset->addrs[j2++] = (int *) (domain_qq + index);
+                }
+
+                for (std::map<Index_t, bool>::iterator it = blocks_delv_xi.begin(); it != blocks_delv_xi.end(); ++it)
+                {
+                    in->addrs[j1++] = (int *) (domain->m_delv_xi + it->first);
+                }
+
+                for (std::map<Index_t, bool>::iterator it = blocks_delv_eta.begin(); it != blocks_delv_eta.end(); ++it)
+                {
+                    in->addrs[j1++] = (int *) (domain->m_delv_eta + it->first);
+                }
+
+                for (std::map<Index_t, bool>::iterator it = blocks_delv_zeta.begin(); it != blocks_delv_zeta.end(); ++it)
+                {
+                    in->addrs[j1++] = (int *) (domain->m_delv_zeta + it->first);
+                }
+                assert(j1   ==       in->addrs_size);
+                assert(j2   == inoutset->addrs_size);
+            }
+        } /* for b */
+    }
+
+    // EvalEOSForElems(domain, vnew, r, rep);
+    EvalEOSForElems_deps_1 = (task_dependency_t **) malloc(sizeof(task_dependency_t *) * numReg);
+    vnew_in_deps = (task_dependency_t **) malloc(sizeof(task_dependency_t *) * numReg);
+    EvalEOSForElems_deps_2 = (task_dependency_t **) malloc(sizeof(task_dependency_t *) * numReg);
+    CalcSoundSpeedForElems_deps = (task_dependency_t **) malloc(sizeof(task_dependency_t *) * numReg);
+    for (Int_t r = 0 ; r < numReg ; ++r)
+    {
+        Real_t * domain_e       = domain->m_e.data();
+        Real_t * domain_qq      = domain->m_qq.data();
+        Real_t * domain_delv    = domain->m_delv.data();
+        Real_t * domain_ss      = domain->m_ss.data();
+
+        const Index_t regElemSize   = domain->regElemSize(r);
+        const Index_t * regElemList = domain->regElemlist(r);
+        const Index_t nblocks = regElemSize / EBS + (regElemSize % EBS != 0);
+
+        EvalEOSForElems_deps_1[r] = (task_dependency_t *) malloc(sizeof(task_dependency_t) * nblocks);
+        vnew_in_deps[r] = (task_dependency_t *) malloc(sizeof(task_dependency_t) * nblocks);
+        EvalEOSForElems_deps_2[r] = (task_dependency_t *) malloc(sizeof(task_dependency_t) * nblocks);
+        CalcSoundSpeedForElems_deps[r] = (task_dependency_t *) malloc(sizeof(task_dependency_t) * nblocks);
+        for (Index_t b = 0; b < regElemSize ; b += EBS)
+        {
+            TASK_SET_COLOR(iter);
+            TASK_SET_LABEL("init");
+            # pragma omp task
+            {
+                std::map<Index_t, bool> blocks;
+
+                Index_t start = b;
+                Index_t end = MIN(start + EBS, regElemSize);
+
+                for (Index_t i = start ; i < end ; ++i)
+                {
+                    const Index_t elem = regElemList[i];
+                    const Index_t index = elem / EBS * EBS;
+                    if (blocks.count(index) == 0) blocks[index] = true;
+                }
+
+                task_dependency_t * in_e_qq_delv = EvalEOSForElems_deps_1[r] + b/EBS;
+                in_e_qq_delv->type       = TASK_DEP_IN;
+                in_e_qq_delv->addrs_size = 3 * blocks.size();
+                in_e_qq_delv->addrs      = (void **) malloc(sizeof(void *) * in_e_qq_delv->addrs_size);
+
+                task_dependency_t * vnew_in_dep = vnew_in_deps[r] + b/EBS;
+                vnew_in_dep->type       = TASK_DEP_IN;
+                vnew_in_dep->addrs_size = blocks.size();
+                vnew_in_dep->addrs      = (void **) malloc(sizeof(void *) * vnew_in_dep->addrs_size);
+
+                task_dependency_t * inoutset_e = EvalEOSForElems_deps_2[r] + b/EBS;
+                inoutset_e->type         = TASK_DEP_INOUTSET;
+                inoutset_e->addrs_size   = blocks.size();
+                inoutset_e->addrs        = (void **) malloc(sizeof(void *) * inoutset_e->addrs_size);
+
+                task_dependency_t * inoutset_ss = CalcSoundSpeedForElems_deps[r] + b/EBS;
+                inoutset_ss->type         = TASK_DEP_INOUTSET;
+                inoutset_ss->addrs_size   = blocks.size();
+                inoutset_ss->addrs        = (void **) malloc(sizeof(void *) * inoutset_ss->addrs_size);
+
+                unsigned int j = 0;
+                for (std::map<Index_t, bool>::iterator it = blocks.begin(); it != blocks.end(); ++it)
+                {
+                    const Index_t index = it->first;
+
+                    in_e_qq_delv->addrs[3 * j + 0] = (int *) (domain_e     + index);
+                    in_e_qq_delv->addrs[3 * j + 1] = (int *) (domain_qq    + index);
+                    in_e_qq_delv->addrs[3 * j + 2] = (int *) (domain_delv  + index);
+
+                    vnew_in_dep->addrs[j] = (int *) (vnew + index);
+
+                    inoutset_e->addrs[j] = (int *) (domain_e + index);
+
+                    inoutset_ss->addrs[j] = (int *) (domain_ss + index);
+
+                    ++j;
+                }
+                assert(3 * j == in_e_qq_delv->addrs_size);
+                assert(    j == vnew_in_dep->addrs_size);
+            }
+
+        } /* b */
+    }
+
+    if (myRank == 0) printf("numElem=%d, elemBlockSize=%d, tel=%d\n", numElem, EBS, opts.tel);
+    if (myRank == 0) printf("numNode=%d, nodeBlockSize=%d, tnl=%d\n", numNode, NBS, opts.tnl);
+    if (myRank == 0) printf("nodesPerFaceRequest=%d, requestsPerFace=%d\n", domain->m_npfr, domain->m_rpf);
+    if (myRank == 0) printf("nodesPerEdgeRequest=%d, requestsPerEdge=%d\n", domain->m_nper, domain->m_rpe);
+
+    # pragma omp taskwait
+}
+
+
+static void deinit_deps(Domain * domain)
+{
+    // free element dependencies
+    const Index_t numElem = domain->numElem();
+    for (Index_t b = 0 ; b < numElem ; b += EBS)
+    {
+        free(dependencies_domain_x_y_z[b/EBS].addrs);
+        free(dependencies_domain_xd_yd_zd[b/EBS].addrs);
+    }
+    free(dependencies_domain_x_y_z);
+    free(dependencies_domain_xd_yd_zd);
+
+    // free nodes dependencies
+    const Index_t numNode = domain->numNode();
+    for (Index_t b = 0; b < numNode ; b += NBS)
+    {
+        free(dependencies_fx_fy_fz_elem[b/NBS].addrs);
+        free(dependencies_fx_fy_fz_elem_FBH[b/NBS].addrs);
+    }
+    free(dependencies_fx_fy_fz_elem);
+    free(dependencies_fx_fy_fz_elem_FBH);
+
+    // free boundary nodes dependencies
+    const Index_t size = domain->sizeX();
+    const Index_t numNodeBC = (size+1)*(size+1);
+    for (Index_t b = 0; b < numNodeBC ; b += NBS)
+    {
+        free(dependencies_bc_xdd[b/NBS].addrs);
+        free(dependencies_bc_ydd[b/NBS].addrs);
+        free(dependencies_bc_zdd[b/NBS].addrs);
+    }
+    free(dependencies_bc_xdd);
+    free(dependencies_bc_ydd);
+    free(dependencies_bc_zdd);
+
+    // free reg. dependencies
+    const Index_t numReg = domain->numReg();
+    for (Index_t r = 0 ; r < numReg ; ++r)
+    {
+        const Index_t regElemSize = domain->regElemSize(r);
+        for (Index_t b = 0 ; b < regElemSize ; b += EBS)
+        {
+            free(dt_courant_deps[r][2*(b/EBS)+0].addrs);
+            free(dt_courant_deps[r][2*(b/EBS)+1].addrs);
+            free(dt_hydro_deps[r][2*(b/EBS)+0].addrs);
+            free(dt_hydro_deps[r][2*(b/EBS)+1].addrs);
+        }
+        free(dt_courant_deps[r]);
+        free(dt_hydro_deps[r]);
+    }
+    free(dt_courant_deps);
+    free(dt_hydro_deps);
+
+    for (Index_t r = 0 ; r < numReg ; ++r)
+    {
+        const Index_t regElemSize = domain->regElemSize(r);
+        for (Index_t b = 0; b < regElemSize ; b += EBS)
+        {
+            free(EvalEOSForElems_deps_1[r][b/EBS].addrs);
+            free(vnew_in_deps[r][b/EBS].addrs);
+            free(EvalEOSForElems_deps_2[r][b/EBS].addrs);
+            free(CalcSoundSpeedForElems_deps[r][b/EBS].addrs);
+        }
+        free(EvalEOSForElems_deps_1[r]);
+        free(vnew_in_deps[r]);
+        free(EvalEOSForElems_deps_2[r]);
+        free(CalcSoundSpeedForElems_deps[r]);
+    }
+    free(EvalEOSForElems_deps_1);
+    free(vnew_in_deps);
+    free(EvalEOSForElems_deps_2);
+    free(CalcSoundSpeedForElems_deps);
+}
+
+
 
 /**********************************************/
 # include <atomic>
@@ -332,10 +1049,11 @@ void TimeDump(Domain * domain)
 {
     TASK_SET_COLOR(iter);
     TASK_SET_LABEL("TimeDump");
+    DEPOBJ_UPDATE(deltatime[0], in);
     # pragma omp task default(none)                     \
         firstprivate(domain)                            \
         shared(opts, cancelled, myRank, TASK_SHARED)    \
-        depend(in: domain->m_deltatime)
+        DEPEND_OBJ(deltatime[0])
     {
         if ((opts.showProg != 0) && (opts.quiet == 0) && (myRank == 0))
         {
@@ -362,19 +1080,24 @@ void TimeIncrement(Domain * domain)
 {
     TASK_SET_COLOR(iter - 1);
     TASK_SET_LABEL("TimeIncrement");
+    DEPOBJ_UPDATE(deltatime[0], out);
+    DEPOBJ_UPDATE(dthydro[0], in);
+    DEPOBJ_UPDATE(dtcourant[0], in);
 #if USE_MPI
     # pragma omp task default(none)                             \
         shared(TASK_SHARED)                                     \
         firstprivate(domain)                                    \
-        depend(in:      domain->m_dtcourant, domain->m_dthydro) \
-        depend(inout:   domain->m_deltatime)                    \
+        DEPEND_OBJ(dthydro[0])                                  \
+        DEPEND_OBJ(dtcourant[0])                                \
+        DEPEND_OBJ(deltatime[0])                                \
         untied                                                  \
         priority(PRIORITY_REDUCE)
 #else
     # pragma omp task default(none)                             \
         firstprivate(domain)                                    \
-        depend(in:      domain->m_dtcourant, domain->m_dthydro) \
-        depend(inout:   domain->m_deltatime)                    \
+        DEPEND_OBJ(dthydro[0])                                  \
+        DEPEND_OBJ(dtcourant[0])                                \
+        DEPEND_OBJ(deltatime[0])                                \
         priority(PRIORITY_REDUCE)
 #endif
     {
@@ -484,20 +1207,21 @@ void InitStressTermsForElems(Domain * domain,
         Real_t *sigxx, Real_t *sigyy, Real_t *sigzz,
         Index_t numElem)
 {
-    const Real_t * domain_e = domain->m_e.data();   (void) domain_e;
     //
     // pull in the stresses appropriate to the hydro integration
     //
     for (Index_t b = 0; b < numElem ; b += EBS)
     {
+        // if 'domain_e' is fulfilled, then 'domain_p' and 'domain_q' are too
         TASK_SET_COLOR(iter);
         TASK_SET_LABEL("InitStressTermsForElems");
-        // if 'domain_e' is fulfilled, then 'domain_p' and 'domain_q' are too
+        DEPOBJ_UPDATE(e[b/EBS],     in);
+        DEPOBJ_UPDATE(sigxx[b/EBS], out);
         # pragma omp task default(none)                             \
             firstprivate(domain, b, sigxx, sigyy, sigzz, numElem)   \
             shared(EBS)                                             \
-            depend(in: domain_e[b])                                 \
-            depend(out: sigxx[b])
+            DEPEND_OBJ(e[b/EBS])                                    \
+            DEPEND_OBJ(sigxx[b/EBS])
         {
             Index_t start = b;
             Index_t end = MIN(start + EBS, numElem);
@@ -2909,7 +3633,7 @@ void ApplyMaterialPropertiesForElems(Domain * domain)
 
 /******************************************/
 
-    static
+static
 void UpdateVolumesForElems(Domain * domain)
 {
     Index_t numElem = domain->numElem();
@@ -2969,10 +3693,11 @@ void CalcCourantConstraintForElems(Domain * domain, Index_t r)
         // compute minimum for this block of this region
         TASK_SET_COLOR(iter);
         TASK_SET_LABEL("CalcCourantConstraintForElems");
+        DEPOBJ_UPDATE(dtcourant[0], in);
         #pragma omp task default(none)                              \
             firstprivate(domain, b, regElemSize, r)                 \
             shared(dt_reduction_courant, EBS)                       \
-            depend(in: domain->m_dtcourant)                         \
+            DEPEND_OBJ(dtcourant[0])                                \
             DEPEND_INOUTSET(dt_courant_deps[r] + 2*(b/EBS)+0, 1)    \
             DEPEND_IN(dt_courant_deps[r] + 2*(b/EBS)+1, 1)
         {
@@ -3052,10 +3777,11 @@ void CalcHydroConstraintForElems(Domain * domain, Index_t r)
     {
         TASK_SET_COLOR(iter);
         TASK_SET_LABEL("CalcHydroConstraintForElems");
+        DEPOBJ_UPDATE(dthydro[0], in);
         #pragma omp task default(none)                          \
             firstprivate(domain, b, regElemSize, r)             \
             shared(dt_reduction_hydro, EBS)                     \
-            depend(in: domain->m_dthydro)                       \
+            DEPEND_OBJ(dthydro[0])                              \
             DEPEND_INOUTSET(dt_hydro_deps[r] + 2*(b/EBS)+0, 1)  \
             DEPEND_INOUTSET(dt_hydro_deps[r] + 2*(b/EBS)+1, 1)
         {
@@ -3118,9 +3844,12 @@ void CalcTimeConstraintsForElems(Domain * domain)
     // Initialize conditions to a very large value
     TASK_SET_COLOR(iter);
     TASK_SET_LABEL("CalcTimeConstraintsForElems_init");
+    DEPOBJ_UPDATE(dthydro[0], out);
+    DEPOBJ_UPDATE(dtcourant[0], out);
     # pragma omp task default(none)                             \
         firstprivate(domain)                                    \
-        depend(inout: domain->m_dtcourant, domain->m_dthydro)
+        DEPEND_OBJ(dthydro[0])                                  \
+        DEPEND_OBJ(dtcourant[0])
     {
         domain->dtcourant() = 1.0e+20;
         domain->dthydro()   = 1.0e+20;
@@ -3136,45 +3865,47 @@ void CalcTimeConstraintsForElems(Domain * domain)
     }
 
      // reduce minimum dt courant and hydro of each region
-     TASK_SET_COLOR(iter);
-     TASK_SET_LABEL("CalcTimeConstraintsForElems_reduce_courant");
-     # pragma omp task default(none)             \
-         firstprivate(domain, numReg)            \
-         shared(dt_reduction_courant)            \
-         depend(inout: dt_reduction_courant)     \
-         depend(out: domain->m_dtcourant)
-     {
-         Real_t & dtcourant = domain->dtcourant();
-         for (Index_t r = 0 ; r < numReg ; ++r)
-         {
-             if (domain->regElemSize(r) == 0) continue ;
-             dt_reduction_t * dt = dt_reduction_courant[r];
-             if (dt->index != -1 && dt->value < dtcourant)
-             {
-                 dtcourant = dt->value;
-             }
-         }
+    TASK_SET_COLOR(iter);
+    TASK_SET_LABEL("CalcTimeConstraintsForElems_reduce_courant");
+    DEPOBJ_UPDATE(dtcourant[0], out);
+    # pragma omp task default(none)             \
+        firstprivate(domain, numReg)            \
+        shared(dt_reduction_courant)            \
+        depend(inout: dt_reduction_courant)     \
+        DEPEND_OBJ(dtcourant[0])
+    {
+        Real_t & dtcourant = domain->dtcourant();
+        for (Index_t r = 0 ; r < numReg ; ++r)
+        {
+            if (domain->regElemSize(r) == 0) continue ;
+            dt_reduction_t * dt = dt_reduction_courant[r];
+            if (dt->index != -1 && dt->value < dtcourant)
+            {
+                dtcourant = dt->value;
+            }
+        }
      }
 
-     TASK_SET_COLOR(iter);
-     TASK_SET_LABEL("CalcTimeConstraintsForElems_reduce_hydro");
-     # pragma omp task default(none)         \
-         firstprivate(domain, numReg)        \
-         shared(dt_reduction_hydro)          \
-         depend(inout: dt_reduction_hydro)   \
-         depend(out: domain->m_dthydro)
-     {
-         Real_t & dthydro = domain->dthydro();
-         for (Index_t r = 0 ; r < numReg ; ++r)
-         {
-             if (domain->regElemSize(r) == 0) continue ;
-             dt_reduction_t * dt = dt_reduction_hydro[r];
-             if (dt->index != -1 && dt->value < dthydro)
-             {
-                 dthydro = dt->value;
-             }
-         }
-     }
+    TASK_SET_COLOR(iter);
+    TASK_SET_LABEL("CalcTimeConstraintsForElems_reduce_hydro");
+    DEPOBJ_UPDATE(dthydro[0], out);
+    # pragma omp task default(none)         \
+        firstprivate(domain, numReg)        \
+        shared(dt_reduction_hydro)          \
+        depend(inout: dt_reduction_hydro)   \
+        DEPEND_OBJ(dthydro[0])
+    {
+        Real_t & dthydro = domain->dthydro();
+        for (Index_t r = 0 ; r < numReg ; ++r)
+        {
+            if (domain->regElemSize(r) == 0) continue ;
+            dt_reduction_t * dt = dt_reduction_hydro[r];
+            if (dt->index != -1 && dt->value < dthydro)
+            {
+                dthydro = dt->value;
+            }
+        }
+    }
 }
 
 /******************************************/
@@ -3383,643 +4114,6 @@ allocate(Domain * domain)
     gamma_v[3][7] = Real_t(-1.);
 }
 
-static void deinit_deps(Domain * domain)
-{
-    // free element dependencies
-    const Index_t numElem = domain->numElem();
-    for (Index_t b = 0 ; b < numElem ; b += EBS)
-    {
-        free(dependencies_domain_x_y_z[b/EBS].addrs);
-        free(dependencies_domain_xd_yd_zd[b/EBS].addrs);
-    }
-    free(dependencies_domain_x_y_z);
-    free(dependencies_domain_xd_yd_zd);
-
-    // free nodes dependencies
-    const Index_t numNode = domain->numNode();
-    for (Index_t b = 0; b < numNode ; b += NBS)
-    {
-        free(dependencies_fx_fy_fz_elem[b/NBS].addrs);
-        free(dependencies_fx_fy_fz_elem_FBH[b/NBS].addrs);
-    }
-    free(dependencies_fx_fy_fz_elem);
-    free(dependencies_fx_fy_fz_elem_FBH);
-
-    // free boundary nodes dependencies
-    const Index_t size = domain->sizeX();
-    const Index_t numNodeBC = (size+1)*(size+1);
-    for (Index_t b = 0; b < numNodeBC ; b += NBS)
-    {
-        free(dependencies_bc_xdd[b/NBS].addrs);
-        free(dependencies_bc_ydd[b/NBS].addrs);
-        free(dependencies_bc_zdd[b/NBS].addrs);
-    }
-    free(dependencies_bc_xdd);
-    free(dependencies_bc_ydd);
-    free(dependencies_bc_zdd);
-
-    // free reg. dependencies
-    const Index_t numReg = domain->numReg();
-    for (Index_t r = 0 ; r < numReg ; ++r)
-    {
-        const Index_t regElemSize = domain->regElemSize(r);
-        for (Index_t b = 0 ; b < regElemSize ; b += EBS)
-        {
-            free(dt_courant_deps[r][2*(b/EBS)+0].addrs);
-            free(dt_courant_deps[r][2*(b/EBS)+1].addrs);
-            free(dt_hydro_deps[r][2*(b/EBS)+0].addrs);
-            free(dt_hydro_deps[r][2*(b/EBS)+1].addrs);
-        }
-        free(dt_courant_deps[r]);
-        free(dt_hydro_deps[r]);
-    }
-    free(dt_courant_deps);
-    free(dt_hydro_deps);
-
-    for (Index_t r = 0 ; r < numReg ; ++r)
-    {
-        const Index_t regElemSize = domain->regElemSize(r);
-        for (Index_t b = 0; b < regElemSize ; b += EBS)
-        {
-            free(EvalEOSForElems_deps_1[r][b/EBS].addrs);
-            free(vnew_in_deps[r][b/EBS].addrs);
-            free(EvalEOSForElems_deps_2[r][b/EBS].addrs);
-            free(CalcSoundSpeedForElems_deps[r][b/EBS].addrs);
-        }
-        free(EvalEOSForElems_deps_1[r]);
-        free(vnew_in_deps[r]);
-        free(EvalEOSForElems_deps_2[r]);
-        free(CalcSoundSpeedForElems_deps[r]);
-    }
-    free(EvalEOSForElems_deps_1);
-    free(vnew_in_deps);
-    free(EvalEOSForElems_deps_2);
-    free(CalcSoundSpeedForElems_deps);
-}
-
-static void init_deps(Domain * domain)
-{
-    // data pointers
-    const Real_t * x = domain->m_x.data();
-    const Real_t * y = domain->m_y.data();
-    const Real_t * z = domain->m_z.data();
-    const Real_t * xd = domain->m_xd.data();
-    const Real_t * yd = domain->m_yd.data();
-    const Real_t * zd = domain->m_zd.data();
-
-    const Real_t * xdd = domain->m_xdd.data();
-    const Real_t * ydd = domain->m_ydd.data();
-    const Real_t * zdd = domain->m_zdd.data();
-
-    const Real_t * domain_ss        = domain->m_ss.data();
-    const Real_t * domain_vdov      = domain->m_vdov.data();
-    const Real_t * domain_arealg    = domain->m_arealg.data();
-
-    // elem -> node loop
-    const Index_t numElem = domain->numElem();
-    const Index_t n_elem_blocks = numElem/EBS + (numElem % EBS != 0);
-
-    dependencies_domain_x_y_z       = (task_dependency_t *) malloc(sizeof(task_dependency_t) * n_elem_blocks);
-    dependencies_domain_xd_yd_zd    = (task_dependency_t *) malloc(sizeof(task_dependency_t) * n_elem_blocks);
-
-    for (Index_t b = 0; b < numElem ; b += EBS)
-    {
-        TASK_SET_COLOR(iter);
-        TASK_SET_LABEL("init");
-        # pragma omp task
-        {
-            std::map<Index_t, bool> blocks;
-
-            //int redundancy = 0;
-            Index_t start = b;
-            Index_t end = MIN(start + EBS, numElem);
-            for (Index_t k = start ; k < end ; ++k)
-            {
-                const Index_t * const elemtonode = domain->nodelist(k);
-                int i;
-                for (i = 0 ; i < 8 ; ++i)
-                {
-                    Index_t index = elemtonode[i] / NBS * NBS;
-                    if (blocks.count(index) == 0) blocks[index] = true;
-                    //else ++redundancy;
-                }
-            }
-//            printf("uniq=%ld, redundant=%d\n", blocks.size(), redundancy);
-
-            // allocate dependency array
-            task_dependency_t * dependency_domain_x_y_z = dependencies_domain_x_y_z + (b/EBS);
-            dependency_domain_x_y_z->type             = TASK_DEP_IN;
-            dependency_domain_x_y_z->addrs_size       = 3 * blocks.size();
-            dependency_domain_x_y_z->addrs            = (void **)malloc(sizeof(void *) * dependency_domain_x_y_z->addrs_size);
-
-            task_dependency_t * dependency_domain_xd_yd_zd = dependencies_domain_xd_yd_zd + (b/EBS);
-            dependency_domain_xd_yd_zd->type        = TASK_DEP_IN;
-            dependency_domain_xd_yd_zd->addrs_size  = 3 * blocks.size();
-            dependency_domain_xd_yd_zd->addrs       = (void **)malloc(sizeof(void *) * dependency_domain_xd_yd_zd->addrs_size);
-
-            // copy unique blocks to the dependency array
-            unsigned int j = 0;
-            for (std::map<Index_t, bool>::iterator it = blocks.begin(); it != blocks.end(); ++it)
-            {
-                const Index_t index = it->first;
-                dependency_domain_x_y_z->addrs[3 * j + 0]       = (int *)(x + index);
-                dependency_domain_x_y_z->addrs[3 * j + 1]       = (int *)(y + index);
-                dependency_domain_x_y_z->addrs[3 * j + 2]       = (int *)(z + index);
-                dependency_domain_xd_yd_zd->addrs[3 * j + 0]    = (int *)(xd + index);
-                dependency_domain_xd_yd_zd->addrs[3 * j + 1]    = (int *)(yd + index);
-                dependency_domain_xd_yd_zd->addrs[3 * j + 2]    = (int *)(zd + index);
-                j += 1;
-            }
-            assert(3 * j == dependency_domain_x_y_z->addrs_size);
-            assert(3 * j == dependency_domain_xd_yd_zd->addrs_size);
-        }
-    }
-
-    // node -> elem loop
-    const Index_t numNode       = domain->numNode();
-    const Index_t n_node_blocks = numNode/NBS + (numNode % NBS != 0);
-
-    dependencies_fx_fy_fz_elem     = (task_dependency_t *) malloc(sizeof(task_dependency_t) * n_node_blocks);
-    dependencies_fx_fy_fz_elem_FBH = (task_dependency_t *) malloc(sizeof(task_dependency_t) * n_node_blocks);
-
-    for (Index_t b = 0; b < numNode ; b += NBS)
-    {
-        TASK_SET_COLOR(iter);
-        TASK_SET_LABEL("init");
-        # pragma omp task
-        {
-            std::map<Index_t, bool> blocks;
-            //int redundancy = 0;
-            Index_t start = b;
-            Index_t end = MIN(start + NBS, numNode);
-            for (Index_t gnode = start ; gnode < end ; ++gnode)
-            {
-                Index_t count = domain->nodeElemCount(gnode) ;
-                Index_t * cornerList = domain->nodeElemCornerList(gnode);
-                for (Index_t i = 0 ; i < count ; ++i)
-                {
-                    Index_t index = cornerList[i] / (8 * EBS) * (8 * EBS);
-                    if (blocks.count(index) == 0) blocks[index] = true;
-                    //else ++redundancy;
-                }
-            }
-//            printf("uniq=%ld, redundant=%d\n", blocks.size(), redundancy);
-
-            task_dependency_t * dependency_fx_fy_fz_elem = dependencies_fx_fy_fz_elem + (b/NBS);
-            dependency_fx_fy_fz_elem->type         = TASK_DEP_IN;
-            dependency_fx_fy_fz_elem->addrs_size   = 1 * blocks.size();
-            dependency_fx_fy_fz_elem->addrs        = (void **)malloc(sizeof(void *) * dependency_fx_fy_fz_elem->addrs_size);
-
-            task_dependency_t * dependency_fx_fy_fz_elem_FBH = dependencies_fx_fy_fz_elem_FBH + (b/NBS);
-            dependency_fx_fy_fz_elem_FBH->type        = TASK_DEP_IN;
-            dependency_fx_fy_fz_elem_FBH->addrs_size  = 1 * blocks.size();
-            dependency_fx_fy_fz_elem_FBH->addrs       = (void **)malloc(sizeof(void *) * dependency_fx_fy_fz_elem_FBH->addrs_size);
-
-            unsigned int j = 0;
-            for (std::map<Index_t, bool>::iterator it = blocks.begin(); it != blocks.end(); ++it)
-            {
-                const Index_t index = it->first;
-
-                dependency_fx_fy_fz_elem->addrs[j+0] = (int *)(fx_elem + index);
-                dependency_fx_fy_fz_elem_FBH->addrs[j+0] = (int *)(fx_elem_FBH + index);
-
-                j += 1;
-            }
-            assert(j == dependency_fx_fy_fz_elem->addrs_size);
-            assert(j == dependency_fx_fy_fz_elem_FBH->addrs_size);
-        }
-    }
-
-    // Boundary nodes dependencies
-    const Index_t sizeX = domain->sizeX();
-    const Index_t numNodeBC = (sizeX+1)*(sizeX+1) ;
-    const Index_t n_blocks_node_bc = numNodeBC / NBS + (numNodeBC % NBS != 0);
-
-    dependencies_bc_xdd  = (task_dependency_t *) malloc(sizeof(task_dependency_t) * n_blocks_node_bc);
-    dependencies_bc_ydd  = (task_dependency_t *) malloc(sizeof(task_dependency_t) * n_blocks_node_bc);
-    dependencies_bc_zdd  = (task_dependency_t *) malloc(sizeof(task_dependency_t) * n_blocks_node_bc);
-
-
-    for (Index_t b = 0; b < numNodeBC ; b += NBS)
-    {
-        TASK_SET_COLOR(iter);
-        TASK_SET_LABEL("init");
-        # pragma omp task
-        {
-            std::map<Index_t, bool> blocks_x, blocks_y, blocks_z;
-            Index_t start = b;
-            Index_t end = MIN(start + NBS, numNodeBC);
-            //int redundancy = 0;
-            for (Index_t i = start ; i < end ; ++i)
-            {
-                if (!domain->symmXempty())
-                {
-                    const Index_t index_x = domain->symmX(i) / NBS * NBS;
-                    if (blocks_x.count(index_x) == 0) blocks_x[index_x] = true;
-                    //else ++redundancy;
-                }
-
-                if (!domain->symmYempty())
-                {
-                    const Index_t index_y = domain->symmY(i) / NBS * NBS;
-                    if (blocks_y.count(index_y) == 0) blocks_y[index_y] = true;
-                    //else ++redundancy;
-                }
-
-                if (!domain->symmZempty())
-                {
-                    const Index_t index_z = domain->symmZ(i) / NBS * NBS;
-                    if (blocks_z.count(index_z) == 0) blocks_z[index_z] = true;
-                    //else ++redundancy;
-                }
-            }
-//            printf("uniq=%ld, redundant=%d\n", blocks_x.size() + blocks_y.size() + blocks_z.size(), redundancy);
-
-            task_dependency_t * dependency_bc_xdd = dependencies_bc_xdd + (b/NBS);
-            dependency_bc_xdd->type         = TASK_DEP_INOUTSET;
-            dependency_bc_xdd->addrs_size   = blocks_x.size();
-            dependency_bc_xdd->addrs        = (void **) malloc(sizeof(void *) * blocks_x.size());
-
-            task_dependency_t * dependency_bc_ydd = dependencies_bc_ydd + (b/NBS);
-            dependency_bc_ydd->type         = TASK_DEP_INOUTSET;
-            dependency_bc_ydd->addrs_size   = blocks_y.size();
-            dependency_bc_ydd->addrs        = (void **) malloc(sizeof(void *) * blocks_y.size());
-
-            task_dependency_t * dependency_bc_zdd = dependencies_bc_zdd + (b/NBS);
-            dependency_bc_zdd->type         = TASK_DEP_INOUTSET;
-            dependency_bc_zdd->addrs_size   = blocks_z.size();
-            dependency_bc_zdd->addrs        = (void **) malloc(sizeof(void *) * blocks_z.size());
-
-            unsigned int j;
-
-            j = 0;
-            for (std::map<Index_t, bool>::iterator it = blocks_x.begin(); it != blocks_x.end(); ++it)
-            {
-                dependency_bc_xdd->addrs[j++] = (int *) (xdd + it->first);
-            }
-            assert(j == dependency_bc_xdd->addrs_size);
-
-            j = 0;
-            for (std::map<Index_t, bool>::iterator it = blocks_y.begin(); it != blocks_y.end(); ++it)
-            {
-                dependency_bc_ydd->addrs[j++] = (int *) (ydd + it->first);
-            }
-            assert(j == dependency_bc_ydd->addrs_size);
-
-            j = 0;
-            for (std::map<Index_t, bool>::iterator it = blocks_z.begin(); it != blocks_z.end(); ++it)
-            {
-                dependency_bc_zdd->addrs[j++] = (int *) (zdd + it->first);
-            }
-            assert(j == dependency_bc_zdd->addrs_size);
-        }
-    }
-
-    // dt time courant and hydro deps
-    const Index_t numReg = domain->numReg();
-    const size_t size = sizeof(task_dependency_t *) * numReg;
-    dt_courant_deps = (task_dependency_t **) malloc(size);
-    dt_hydro_deps = (task_dependency_t **) malloc(size);
-    for (Index_t r = 0 ; r < numReg ; ++r)
-    {
-        const Index_t regElemSize   = domain->regElemSize(r);
-        const Index_t nblocks       = regElemSize / EBS + (regElemSize % EBS != 0);
-        const size_t size = sizeof(task_dependency_t) * 2*nblocks;
-        dt_courant_deps[r] = (task_dependency_t *) malloc(size);
-        dt_hydro_deps[r] = (task_dependency_t *) malloc(size);
-
-        for (Index_t b = 0 ; b < regElemSize ; b += EBS)
-        {
-            TASK_SET_COLOR(iter);
-            TASK_SET_LABEL("init");
-            # pragma omp task
-            {
-                std::map<Index_t, bool> blocks;
-
-                task_dependency_t * inoutset_courant = dt_courant_deps[r] + 2*(b/EBS)+0;
-                task_dependency_t * in_courant       = dt_courant_deps[r] + 2*(b/EBS)+1;
-
-                task_dependency_t * inoutset_hydro = dt_hydro_deps[r] + 2*(b/EBS)+0;
-                task_dependency_t * in_hydro       = dt_hydro_deps[r] + 2*(b/EBS)+1;
-
-                // reduction on 'dtcourant' and 'dthydro' per block
-                inoutset_courant->type          = TASK_DEP_INOUTSET;
-                inoutset_courant->addrs_size    = 1;
-                inoutset_courant->addrs         = (void **) malloc(sizeof(void *) * 1);
-                inoutset_courant->addrs[0]      = (int *) &(dt_reduction_courant[r]);
-
-                inoutset_hydro->type            = TASK_DEP_INOUTSET;
-                inoutset_hydro->addrs_size      = 1;
-                inoutset_hydro->addrs           = (void **) malloc(sizeof(void *) * 1);
-                inoutset_hydro->addrs[0]        = (int *) &(dt_reduction_hydro[r]);
-
-                // in dependencies
-                // IN : domain->ss(index)
-                // IN : domain->vdov(index)
-                // IN : domain->arealg(index)
-                Index_t start = b;
-                Index_t end = MIN(start + EBS, regElemSize);
-                //int redundancy = 0;
-                for (Index_t i = start ; i < end ; ++i)
-                {
-                    const Index_t * regElemlist = domain->regElemlist(r);
-                    const Index_t index = regElemlist[i] / EBS * EBS;
-                    if (blocks.count(index) == 0)   blocks[index] = true;
-                    //else ++redundancy;
-                }
-//                printf("uniq=%ld, redundant=%d\n", blocks.size(), redundancy);
-
-                in_courant->type        = TASK_DEP_IN;
-                in_courant->addrs_size  = 3 * blocks.size();
-                in_courant->addrs       = (void **) malloc(sizeof(void *) * in_courant->addrs_size);
-
-                in_hydro->type          = TASK_DEP_IN;
-                in_hydro->addrs_size    = 1 * blocks.size();
-                in_hydro->addrs         = (void **) malloc(sizeof(void *) * in_hydro->addrs_size);
-
-                unsigned int j = 0;
-                for (std::map<Index_t, bool>::iterator it = blocks.begin(); it != blocks.end(); ++it)
-                {
-                    const Index_t index = it->first;
-                    in_courant->addrs[3 * j + 0] = (int *) (domain_ss     + index);
-                    in_courant->addrs[3 * j + 1] = (int *) (domain_vdov   + index);
-                    in_courant->addrs[3 * j + 2] = (int *) (domain_arealg + index);
-
-                    in_hydro->addrs[j] = (int *) (domain_vdov + index);
-
-                    ++j;
-                }
-                assert(3 * j == in_courant->addrs_size);
-                assert(    j ==   in_hydro->addrs_size);
-            }
-        }
-    }
-
-    // CalcMonotonicQRegionForElems
-    // IN : delv_xi(i),   delv_xi(lxim(i)),     delv_xi(lxip(i))
-    // IN : delv_eta(i),  delv_eta(letam(i)),   delv_eta(letap(i))
-    // IN : delv_zeta(i), delv_zeta(lzetam(i)), delv_zeta(lzetap(i))
-    // IN : delx_xi(i), delx_eta(i), delx_zeta(i)
-    // IN : vdov(i), volo(i), vnew[i]
-    // OUT : qq[i], ql[i]
-    CalcMonotonicQRegionForElems_deps = (task_dependency_t **) malloc(sizeof(task_dependency_t *) * numReg);
-
-    const Real_t * domain_qq        = domain->m_qq.data();          (void) domain_qq;
-
-    for (Index_t r = 0 ; r < numReg ; ++r)
-    {
-        Index_t regElemSize   = domain->regElemSize(r);
-        const Index_t nblocks = regElemSize / EBS + (regElemSize % EBS != 0);
-        CalcMonotonicQRegionForElems_deps[r] = (task_dependency_t *) malloc(sizeof(task_dependency_t) * 2*nblocks);
-        for (Index_t b = 0; b < regElemSize ; b += EBS)
-        {
-            TASK_SET_COLOR(iter);
-            TASK_SET_LABEL("init");
-            # pragma omp task
-            {
-                std::map<Index_t, bool> blocks;
-                std::map<Index_t, bool> blocks_delv_xi;
-                std::map<Index_t, bool> blocks_delv_eta;
-                std::map<Index_t, bool> blocks_delv_zeta;
-
-                Index_t start = b;
-                Index_t end = MIN(start + EBS, regElemSize);
-                for (Index_t ielem = start ; ielem < end ; ++ielem)
-                {
-                    Index_t i = domain->regElemlist(r, ielem);
-                    Index_t i_block = i / EBS * EBS;
-
-                    // IN : delx_xi(i), delx_eta(i), delx_zeta(i)
-                    // IN : domain->vdov(i), vnew[i]
-                    // IN : domain->delv_xi(i), domain->delv_eta(i), domain->delv_zeta(i)
-                    // IN : domain->delx_xi(i), domain->delx_eta(i), domain->delx_zeta(i)
-                    // OUT : domain->qq(i), domain->ql(i)
-                    if (blocks.count(i_block) == 0) blocks[i_block] = true;
-
-                    // IN : maybe domain->delv_xi(domain->lxim(i))
-                    // IN : maybe domain->delv_xi(domain->lxip(i))
-                    // IN : maybe domain->delv_eta(domain->letam(i))
-                    // IN : maybe domain->delv_eta(domain->letap(i))
-                    // IN : maybe domain->delv_zeta(domain->lzetam(i))
-                    // IN : maybe domain->delv_zeta(domain->lzetap(i))
-                    Int_t bcMask = domain->elemBC(i) ;
-                    switch (bcMask & XI_M)
-                    {
-                        case XI_M_COMM:
-                        case 0:
-                        {
-                            Index_t index = domain->lxim(i) / EBS * EBS;
-                            if (blocks_delv_xi.count(index) == 0) blocks_delv_xi[index] = true;
-                            break ;
-                        }
-                        default: break;
-                    }
-
-                    switch (bcMask & XI_P)
-                    {
-                        case XI_P_COMM:
-                        case 0:
-                        {
-                            Index_t index = domain->lxip(i) / EBS * EBS;
-                            if (blocks_delv_xi.count(index) == 0) blocks_delv_xi[index] = true;
-                            break ;
-                        }
-                        default: break;
-                    }
-
-                    switch (bcMask & ETA_M)
-                    {
-                        case ETA_M_COMM:
-                        case 0:
-                        {
-                            Index_t index = domain->letam(i) / EBS * EBS;
-                            if (blocks_delv_eta.count(index) == 0) blocks_delv_eta[index] = true;
-                            break ;
-                        }
-                        default: break;
-                    }
-
-                    switch (bcMask & ETA_P)
-                    {
-                        case ETA_P_COMM:
-                        case 0:
-                        {
-                            Index_t index = domain->letap(i) / EBS * EBS;
-                            if (blocks_delv_eta.count(index) == 0) blocks_delv_eta[index] = true;
-                            break ;
-                        }
-                        default: break;
-                    }
-
-                    switch (bcMask & ZETA_M)
-                    {
-                        case ZETA_M_COMM:
-                        case 0:
-                        {
-                            Index_t index = domain->lzetam(i) / EBS * EBS;
-                            if (blocks_delv_zeta.count(index) == 0) blocks_delv_zeta[index] = true;
-                            break ;
-                        }
-                        default: break;
-                    }
-
-                    switch (bcMask & ZETA_P)
-                    {
-                        case ZETA_P_COMM:
-                        case 0:
-                        {
-                            Index_t index = domain->lzetap(i) / EBS * EBS;
-                            if (blocks_delv_zeta.count(index) == 0) blocks_delv_zeta[index] = true;
-                            break ;
-                        }
-                        default: break;
-                    }
-                } /* for ielem */
-
-                task_dependency_t * inoutset = CalcMonotonicQRegionForElems_deps[r] + 2*(b/EBS)+0;
-                inoutset->type       = TASK_DEP_INOUTSET;
-                inoutset->addrs_size = 1 * blocks.size();
-                inoutset->addrs      = (void **) malloc(sizeof(void *) * inoutset->addrs_size);
-
-                task_dependency_t * in  = CalcMonotonicQRegionForElems_deps[r] + 2*(b/EBS)+1;
-                in->type        = TASK_DEP_IN;
-                in->addrs_size  = 8 * blocks.size()
-                                    + blocks_delv_xi.size()
-                                    + blocks_delv_eta.size()
-                                    + blocks_delv_zeta.size();
-                in->addrs       = (void **) malloc(sizeof(void *) * in->addrs_size);
-
-                unsigned int j1 = 0;
-                unsigned int j2 = 0;
-                for (std::map<Index_t, bool>::iterator it = blocks.begin(); it != blocks.end(); ++it)
-                {
-                    const Index_t index = it->first;
-
-                    in->addrs[j1++] = (int *) (domain->m_delv_xi    + index);
-                    in->addrs[j1++] = (int *) (domain->m_delv_eta   + index);
-                    in->addrs[j1++] = (int *) (domain->m_delv_zeta  + index);
-
-                    in->addrs[j1++] = (int *) (domain->m_delx_xi    + index);
-                    in->addrs[j1++] = (int *) (domain->m_delx_eta   + index);
-                    in->addrs[j1++] = (int *) (domain->m_delx_zeta  + index);
-
-                    in->addrs[j1++] = (int *) (domain_vdov       + index);
-                    in->addrs[j1++] = (int *) (vnew              + index);
-
-                    inoutset->addrs[j2++] = (int *) (domain_qq + index);
-                }
-
-                for (std::map<Index_t, bool>::iterator it = blocks_delv_xi.begin(); it != blocks_delv_xi.end(); ++it)
-                {
-                    in->addrs[j1++] = (int *) (domain->m_delv_xi + it->first);
-                }
-
-                for (std::map<Index_t, bool>::iterator it = blocks_delv_eta.begin(); it != blocks_delv_eta.end(); ++it)
-                {
-                    in->addrs[j1++] = (int *) (domain->m_delv_eta + it->first);
-                }
-
-                for (std::map<Index_t, bool>::iterator it = blocks_delv_zeta.begin(); it != blocks_delv_zeta.end(); ++it)
-                {
-                    in->addrs[j1++] = (int *) (domain->m_delv_zeta + it->first);
-                }
-                assert(j1   ==       in->addrs_size);
-                assert(j2   == inoutset->addrs_size);
-            }
-        } /* for b */
-    }
-
-    // EvalEOSForElems(domain, vnew, r, rep);
-    EvalEOSForElems_deps_1 = (task_dependency_t **) malloc(sizeof(task_dependency_t *) * numReg);
-    vnew_in_deps = (task_dependency_t **) malloc(sizeof(task_dependency_t *) * numReg);
-    EvalEOSForElems_deps_2 = (task_dependency_t **) malloc(sizeof(task_dependency_t *) * numReg);
-    CalcSoundSpeedForElems_deps = (task_dependency_t **) malloc(sizeof(task_dependency_t *) * numReg);
-    for (Int_t r = 0 ; r < numReg ; ++r)
-    {
-        Real_t * domain_e       = domain->m_e.data();
-        Real_t * domain_qq      = domain->m_qq.data();
-        Real_t * domain_delv    = domain->m_delv.data();
-        Real_t * domain_ss      = domain->m_ss.data();
-
-        const Index_t regElemSize   = domain->regElemSize(r);
-        const Index_t * regElemList = domain->regElemlist(r);
-        const Index_t nblocks = regElemSize / EBS + (regElemSize % EBS != 0);
-
-        EvalEOSForElems_deps_1[r] = (task_dependency_t *) malloc(sizeof(task_dependency_t) * nblocks);
-        vnew_in_deps[r] = (task_dependency_t *) malloc(sizeof(task_dependency_t) * nblocks);
-        EvalEOSForElems_deps_2[r] = (task_dependency_t *) malloc(sizeof(task_dependency_t) * nblocks);
-        CalcSoundSpeedForElems_deps[r] = (task_dependency_t *) malloc(sizeof(task_dependency_t) * nblocks);
-        for (Index_t b = 0; b < regElemSize ; b += EBS)
-        {
-            TASK_SET_COLOR(iter);
-            TASK_SET_LABEL("init");
-            # pragma omp task
-            {
-                std::map<Index_t, bool> blocks;
-
-                Index_t start = b;
-                Index_t end = MIN(start + EBS, regElemSize);
-
-                //int redundancy = 0;
-                for (Index_t i = start ; i < end ; ++i)
-                {
-                    const Index_t elem = regElemList[i];
-                    const Index_t index = elem / EBS * EBS;
-                    if (blocks.count(index) == 0) blocks[index] = true;
-                    //else ++redundancy;
-                }
-//                printf("uniq=%ld, redundant=%d\n", blocks.size(), redundancy);
-
-                task_dependency_t * in_e_qq_delv = EvalEOSForElems_deps_1[r] + b/EBS;
-                in_e_qq_delv->type       = TASK_DEP_IN;
-                in_e_qq_delv->addrs_size = 3 * blocks.size();
-                in_e_qq_delv->addrs      = (void **) malloc(sizeof(void *) * in_e_qq_delv->addrs_size);
-
-                task_dependency_t * vnew_in_dep = vnew_in_deps[r] + b/EBS;
-                vnew_in_dep->type       = TASK_DEP_IN;
-                vnew_in_dep->addrs_size = blocks.size();
-                vnew_in_dep->addrs      = (void **) malloc(sizeof(void *) * vnew_in_dep->addrs_size);
-
-                task_dependency_t * inoutset_e = EvalEOSForElems_deps_2[r] + b/EBS;
-                inoutset_e->type         = TASK_DEP_INOUTSET;
-                inoutset_e->addrs_size   = blocks.size();
-                inoutset_e->addrs        = (void **) malloc(sizeof(void *) * inoutset_e->addrs_size);
-
-                task_dependency_t * inoutset_ss = CalcSoundSpeedForElems_deps[r] + b/EBS;
-                inoutset_ss->type         = TASK_DEP_INOUTSET;
-                inoutset_ss->addrs_size   = blocks.size();
-                inoutset_ss->addrs        = (void **) malloc(sizeof(void *) * inoutset_ss->addrs_size);
-
-                unsigned int j = 0;
-                for (std::map<Index_t, bool>::iterator it = blocks.begin(); it != blocks.end(); ++it)
-                {
-                    const Index_t index = it->first;
-
-                    in_e_qq_delv->addrs[3 * j + 0] = (int *) (domain_e     + index);
-                    in_e_qq_delv->addrs[3 * j + 1] = (int *) (domain_qq    + index);
-                    in_e_qq_delv->addrs[3 * j + 2] = (int *) (domain_delv  + index);
-
-                    vnew_in_dep->addrs[j] = (int *) (vnew + index);
-
-                    inoutset_e->addrs[j] = (int *) (domain_e + index);
-
-                    inoutset_ss->addrs[j] = (int *) (domain_ss + index);
-
-                    ++j;
-                }
-                assert(3 * j == in_e_qq_delv->addrs_size);
-                assert(    j == vnew_in_dep->addrs_size);
-            }
-
-        } /* b */
-    }
-
-    if (myRank == 0) printf("numElem=%d, elemBlockSize=%d, tel=%d\n", numElem, EBS, opts.tel);
-    if (myRank == 0) printf("numNode=%d, nodeBlockSize=%d, tnl=%d\n", numNode, NBS, opts.tnl);
-    if (myRank == 0) printf("nodesPerFaceRequest=%d, requestsPerFace=%d\n", domain->m_npfr, domain->m_rpf);
-    if (myRank == 0) printf("nodesPerEdgeRequest=%d, requestsPerEdge=%d\n", domain->m_nper, domain->m_rpe);
-}
-
 /******************************************/
 int main(int argc, char *argv[])
 {
@@ -4148,10 +4242,6 @@ int main(int argc, char *argv[])
 
         # pragma omp single
         {
-#ifdef DRYRUN
-            mpc_omp_task_dry_run(1);
-#endif /* DRYRUN */
-
             // BEGIN timestep to solution */
             start = lulesh_timer();
 
@@ -4179,13 +4269,9 @@ int main(int argc, char *argv[])
             double elapsed_timeG;
             double tgraphG;
 
-#ifdef DRYRUN
-            mpc_omp_task_dry_run(0);
-#endif /* DRYRUN */
-
             TASK_SET_COLOR(iter);
             TASK_SET_LABEL("Compute Elapsed Time");
-            # pragma omp task default(shared) if(0)
+//            # pragma omp task default(shared) if(0)
             {
                 // Use reduced max elapsed time
 #if USE_MPI
@@ -4202,7 +4288,7 @@ int main(int argc, char *argv[])
             {
                 TASK_SET_COLOR(iter);
                 TASK_SET_LABEL("Dump to viz");
-                # pragma omp task default(shared) if(0)
+//                # pragma omp task default(shared) if(0)
                 {
                     DumpToVisit(domain, opts.numFiles, myRank, numRanks) ;
                 }
@@ -4212,7 +4298,7 @@ int main(int argc, char *argv[])
             {
                 TASK_SET_COLOR(iter);
                 TASK_SET_LABEL("Verify result");
-                # pragma omp task default(shared) if(0)
+//                # pragma omp task default(shared) if(0)
                 {
                     int numThreads = omp_get_num_threads();
                     VerifyAndWriteFinalOutput(elapsed_timeG, domain, opts.nx, numRanks, numThreads);
@@ -4222,7 +4308,7 @@ int main(int argc, char *argv[])
 
             TASK_SET_COLOR(iter);
             TASK_SET_LABEL("Deallocate");
-            # pragma omp task default(shared) if(0)
+//            # pragma omp task default(shared) if(0)
             {
                 deallocate(domain);
                 deinit_deps(domain);

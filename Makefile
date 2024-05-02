@@ -1,6 +1,7 @@
 # Common code
 COMMON_CFLAGS=-Wall -Wextra -I common/ -O3 -g
 COMMON_CFLAGS+=-Wno-unused-parameter -Wno-reserved-user-defined-literal
+#COMMON_CFLAGS+=-fsanitize=thread
 #COMMON_CFLAGS+=-DDRYRUN
 #COMMON_CFLAGS+=-DTRACE=1
 #COMMON_CFLAGS+=-DTRACE_COLOR=1
