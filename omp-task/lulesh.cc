@@ -275,49 +275,44 @@ dt_reduction_t ** dt_reduction_hydro;
  * we saw up to 50% speed gain on graph generation, and ~40% of overall performance gain.
  */
 
-typedef struct  dependences_s
-{
-    omp_depend_t * objs;
-    unsigned int n;
-}               dependences_t;
-
 static struct {
-    dependences_t * deltatime;
-    dependences_t * dthydro;
-    dependences_t * dtcourant;
-    dependences_t * e;
-    dependences_t * sigxx;
+    // single variable
+    omp_depend_t * deltatime;
+    omp_depend_t * dthydro;
+    omp_depend_t * dtcourant;
+
+    // indexed by elements
+    omp_depend_t * e;
+    omp_depend_t * sigxx;
+    omp_depend_t * xyz;
+
+    // indexed by nodes
+    omp_depend_t * x;
+    omp_depend_t * y;
+    omp_depend_t * z;
 } deps;
 
-
-
 #define STRINGIFY(a) #a
-# define DEPOBJ_UPDATE(D, T)                                            \
-    do {                                                                \
-        for (unsigned int i = 0 ; i < deps.D.n ; ++i)                   \
-        {                                                               \
-            _Pragma(STRINGIFY(omp depobj(deps.D.objs[i]) update(T)))    \
-        }                                                               \
+# define DEPOBJ_UPDATE(D, I, T)                                \
+    do {                                                       \
+        _Pragma(STRINGIFY(omp depobj(deps.D[I]) update(T)))    \
     } while (0);
 
-# define DEPS_ALLOC(D, N)                                               \
-    do {                                                                \
-        deps.D = (dependences_t *) malloc(sizeof(dependences_t) * N);   \
+# define DEPOBJ_ALLOC(D, N)                                         \
+    do {                                                            \
+        deps.D = (omp_depend_t *) malloc(sizeof(omp_depend_t) * N); \
     } while (0);
 
-# define DEPOBJ_ALLOC(D, N)                                                 \
-    do {                                                                    \
-        deps.D.n = N;                                                       \
-        deps.D.objs = (omp_depend_t *) malloc(sizeof(omp_depend_t) * N);    \
+# define DEPOBJ_SET(D, I, ...)                                                  \
+    do {                                                                        \
+        _Pragma(STRINGIFY(omp depobj(deps.D[I]) depend(__VA_ARGS__)))   \
     } while (0);
 
-# define DEPOBJ_SET(D, N, ...)                                              \
-    do {                                                                    \
-        _Pragma(STRINGIFY(omp depobj(deps.D.objs[N]) depend(__VA_ARGS__)))  \
-    } while (0);
+# define DEPEND_OBJ(D, I) depend(depobj: deps.D[I])
 
-
-# define DEPEND_OBJ(D) depend(iterator(_i=0:deps.D.n), depobj: deps.D.objs[_i])
+# define IN(ADDR, N)       iterator(i=0:N), in:       (((char *)(ADDR[i]))[0])
+# define OUT(ADDR, N)      iterator(i=0:N), out:      (((char *)(ADDR[i]))[0])
+# define INOUTSET(ADDR, N) iterator(i=0:N), inoutset: (((char *)(ADDR[i]))[0])
 
 typedef enum task_dep_type_e
 {
@@ -361,21 +356,21 @@ static task_dependency_t ** CalcSoundSpeedForElems_deps;
 static void init_deps(Domain * domain)
 {
     // set single field dependency objects
-    DEPS_ALLOC(deltatime, 1);
-    DEPOBJ_ALLOC(deltatime[0], 1);
-    DEPOBJ_SET(deltatime[0], 0, in: domain->m_deltatime);
+    DEPOBJ_ALLOC(deltatime, 1);
+    DEPOBJ_SET(deltatime, 0, in: domain->m_deltatime);
 
-    DEPS_ALLOC(dtcourant, 1);
-    DEPOBJ_ALLOC(dtcourant[0], 1);
-    DEPOBJ_SET(dtcourant[0], 0, in: domain->m_dtcourant);
+    DEPOBJ_ALLOC(dtcourant, 1);
+    DEPOBJ_SET(dtcourant, 0, in: domain->m_dtcourant);
 
-    DEPS_ALLOC(dthydro, 1);
-    DEPOBJ_ALLOC(dthydro[0], 1);
-    DEPOBJ_SET(dthydro[0], 0, in: domain->m_dthydro);
+    DEPOBJ_ALLOC(dthydro, 1);
+    DEPOBJ_SET(dthydro, 0, in: domain->m_dthydro);
 
     // dimensions
     const Index_t numElem = domain->numElem();
     const Index_t n_elem_blocks = numElem/EBS + (numElem % EBS != 0);
+
+    const Index_t numNode = domain->numNode();
+    const Index_t n_node_blocks = numNode/NBS + (numNode % NBS != 0);
 
     // data pointers
     const Real_t * x = domain->m_x.data();
@@ -393,26 +388,26 @@ static void init_deps(Domain * domain)
     const Real_t * domain_vdov      = domain->m_vdov.data();
     const Real_t * domain_arealg    = domain->m_arealg.data();
 
-    const Real_t * domain_e = domain->m_e.data();
+    const Real_t * e = domain->m_e.data();
 
     // allocate dependences objects
-    DEPS_ALLOC(e,     n_elem_blocks);
-    DEPS_ALLOC(sigxx, n_elem_blocks);
-    DEPS_ALLOC(xyz, n_elem_blocks);
+    DEPOBJ_ALLOC(e,       n_elem_blocks);
+    DEPOBJ_ALLOC(sigxx,   n_elem_blocks);
+    DEPOBJ_ALLOC(xyz,     n_elem_blocks);
 
     // set dependences object
     for (Index_t b = 0; b < numElem ; b += EBS)
     {
         TASK_SET_COLOR(iter);
-        TASK_SET_LABEL("init");
+        TASK_SET_LABEL("init elems");
         # pragma omp task
         {
-            // regular dependences
-            DEPOBJ_ALLOC(e[b/EBS], 1);
-            DEPOBJ_SET(e[b/EBS], 0, in: domain_e[b]);
+            // build depobj regularly
+            DEPOBJ_SET(sigxx, b/EBS, in: sigxx[b]);
+            DEPOBJ_SET(e,     b/EBS, in: e[b]);
 
-            DEPOBJ_ALLOC(sigxx[b/EBS], 1);
-            DEPOBJ_SET(sigxx[b/EBS], 0, in: sigxx[b]);
+            // build the indirection array for irregular dependencies
+            // TODO
 
             // irregular dependences
             std::map<Index_t, bool> blocks;
@@ -432,52 +427,90 @@ static void init_deps(Domain * domain)
             }
 
             // allocate dependency array
-            unsigned int n = blocks.size();
-            DEPOBJ_ALLOC(x[b/EBS], n);
-            DEPOBJ_ALLOC(y[b/EBS], n);
-            DEPOBJ_ALLOC(z[b/EBS], n);
+            unsigned int nblocks = blocks.size();
 
-            for (int i = 0 ; i < n ; ++i)
-            FILL
+            // copy unique blocks to the dependency array
+            void ** addr = (void **) malloc(sizeof(void *) * 3 * nblocks);
+            unsigned int j = 0;
+            for (std::map<Index_t, bool>::iterator it = blocks.begin(); it != blocks.end(); ++it)
+            {
+                const Index_t index = it->first;
+                addr[3*j+0] = (int *)(x + index);
+                addr[3*j+1] = (int *)(y + index);
+                addr[3*j+2] = (int *)(z + index);
+                ++j;
+            }
 
-            DEPOBJ_SET(xyz[b/EBS], 0, iterator(i...), in: x[i])
-            DEPOBJ_SET(xyz[b/EBS], 1, iterator(i...), in: y[i])
-            DEPOBJ_SET(xyz[b/EBS], 2, iterator(i...), in: z[i])
+//            DEPOBJ_SET(xyz, b/EBS, IN(addr, 3*nblocks));
+//            TODO
+            DEPOBJ_SET(xyz, b/EBS, in: x[0]);
 
-            dependency_domain_x_y_z->type             = TASK_DEP_IN;
-            dependency_domain_x_y_z->addrs_size       = 3 * blocks.size();
-            dependency_domain_x_y_z->addrs            = (void **)malloc(sizeof(void *) * dependency_domain_x_y_z->addrs_size);
+            free(addr);
+        }
+    }
+
+    // set dependences object
+    DEPOBJ_ALLOC(x,       n_node_blocks);
+    DEPOBJ_ALLOC(y,       n_node_blocks);
+    DEPOBJ_ALLOC(z,       n_node_blocks);
+
+    for (Index_t b = 0; b < numNode ; b += NBS)
+    {
+        TASK_SET_COLOR(iter);
+        TASK_SET_LABEL("init nodes");
+        # pragma omp task
+        {
+            DEPOBJ_SET(x, b/NBS, in: x[b]);
+            DEPOBJ_SET(y, b/NBS, in: y[b]);
+            DEPOBJ_SET(z, b/NBS, in: z[b]);
+        }
+    }
+
+    // OLD CODE
+    dependencies_domain_x_y_z       = (task_dependency_t *) malloc(sizeof(task_dependency_t) * n_elem_blocks);
+    dependencies_domain_xd_yd_zd    = (task_dependency_t *) malloc(sizeof(task_dependency_t) * n_elem_blocks);
+
+    // elem -> node loop
+    for (Index_t b = 0; b < numElem ; b += EBS)
+    {
+        # pragma omp task
+        {
+            std::map<Index_t, bool> blocks;
+
+            Index_t start = b;
+            Index_t end = MIN(start + EBS, numElem);
+            for (Index_t k = start ; k < end ; ++k)
+            {
+                const Index_t * const elemtonode = domain->nodelist(k);
+                int i;
+                for (i = 0 ; i < 8 ; ++i)
+                {
+                    Index_t index = elemtonode[i] / NBS * NBS;
+                    if (blocks.count(index) == 0)
+                        blocks[index] = true;
+                }
+            }
+
+            task_dependency_t * dependency_domain_x_y_z = dependencies_domain_x_y_z + (b/EBS);
+            dependency_domain_x_y_z->type        = TASK_DEP_IN;
+            dependency_domain_x_y_z->addrs_size  = 3 * blocks.size();
+            dependency_domain_x_y_z->addrs       = (void **)malloc(sizeof(void *) * dependency_domain_x_y_z->addrs_size);
 
             task_dependency_t * dependency_domain_xd_yd_zd = dependencies_domain_xd_yd_zd + (b/EBS);
             dependency_domain_xd_yd_zd->type        = TASK_DEP_IN;
             dependency_domain_xd_yd_zd->addrs_size  = 3 * blocks.size();
             dependency_domain_xd_yd_zd->addrs       = (void **)malloc(sizeof(void *) * dependency_domain_xd_yd_zd->addrs_size);
 
-
-        }
-    }
-
-
-    // elem -> node loop
-
-    dependencies_domain_x_y_z       = (task_dependency_t *) malloc(sizeof(task_dependency_t) * n_elem_blocks);
-    dependencies_domain_xd_yd_zd    = (task_dependency_t *) malloc(sizeof(task_dependency_t) * n_elem_blocks);
-
-    for (Index_t b = 0; b < numElem ; b += EBS)
-    {
-        # pragma omp task
-        {
-
-
-
             // copy unique blocks to the dependency array
             unsigned int j = 0;
             for (std::map<Index_t, bool>::iterator it = blocks.begin(); it != blocks.end(); ++it)
             {
                 const Index_t index = it->first;
+
                 dependency_domain_x_y_z->addrs[3 * j + 0]       = (int *)(x + index);
                 dependency_domain_x_y_z->addrs[3 * j + 1]       = (int *)(y + index);
                 dependency_domain_x_y_z->addrs[3 * j + 2]       = (int *)(z + index);
+
                 dependency_domain_xd_yd_zd->addrs[3 * j + 0]    = (int *)(xd + index);
                 dependency_domain_xd_yd_zd->addrs[3 * j + 1]    = (int *)(yd + index);
                 dependency_domain_xd_yd_zd->addrs[3 * j + 2]    = (int *)(zd + index);
@@ -489,8 +522,6 @@ static void init_deps(Domain * domain)
     }
 
     // node -> elem loop
-    const Index_t numNode       = domain->numNode();
-    const Index_t n_node_blocks = numNode/NBS + (numNode % NBS != 0);
 
     dependencies_fx_fy_fz_elem     = (task_dependency_t *) malloc(sizeof(task_dependency_t) * n_node_blocks);
     dependencies_fx_fy_fz_elem_FBH = (task_dependency_t *) malloc(sizeof(task_dependency_t) * n_node_blocks);
@@ -1049,11 +1080,11 @@ void TimeDump(Domain * domain)
 {
     TASK_SET_COLOR(iter);
     TASK_SET_LABEL("TimeDump");
-    DEPOBJ_UPDATE(deltatime[0], in);
+    DEPOBJ_UPDATE(deltatime, 0, in);
     # pragma omp task default(none)                     \
         firstprivate(domain)                            \
         shared(opts, cancelled, myRank, TASK_SHARED)    \
-        DEPEND_OBJ(deltatime[0])
+        DEPEND_OBJ(deltatime, 0)
     {
         if ((opts.showProg != 0) && (opts.quiet == 0) && (myRank == 0))
         {
@@ -1080,24 +1111,24 @@ void TimeIncrement(Domain * domain)
 {
     TASK_SET_COLOR(iter - 1);
     TASK_SET_LABEL("TimeIncrement");
-    DEPOBJ_UPDATE(deltatime[0], out);
-    DEPOBJ_UPDATE(dthydro[0], in);
-    DEPOBJ_UPDATE(dtcourant[0], in);
+    DEPOBJ_UPDATE(deltatime, 0, out);
+    DEPOBJ_UPDATE(dthydro, 0, in);
+    DEPOBJ_UPDATE(dtcourant, 0, in);
 #if USE_MPI
     # pragma omp task default(none)                             \
         shared(TASK_SHARED)                                     \
         firstprivate(domain)                                    \
-        DEPEND_OBJ(dthydro[0])                                  \
-        DEPEND_OBJ(dtcourant[0])                                \
-        DEPEND_OBJ(deltatime[0])                                \
+        DEPEND_OBJ(dthydro, 0)                                  \
+        DEPEND_OBJ(dtcourant, 0)                                \
+        DEPEND_OBJ(deltatime, 0)                                \
         untied                                                  \
         priority(PRIORITY_REDUCE)
 #else
     # pragma omp task default(none)                             \
         firstprivate(domain)                                    \
-        DEPEND_OBJ(dthydro[0])                                  \
-        DEPEND_OBJ(dtcourant[0])                                \
-        DEPEND_OBJ(deltatime[0])                                \
+        DEPEND_OBJ(dthydro, 0)                                  \
+        DEPEND_OBJ(dtcourant, 0)                                \
+        DEPEND_OBJ(deltatime, 0)                                \
         priority(PRIORITY_REDUCE)
 #endif
     {
@@ -1215,13 +1246,13 @@ void InitStressTermsForElems(Domain * domain,
         // if 'domain_e' is fulfilled, then 'domain_p' and 'domain_q' are too
         TASK_SET_COLOR(iter);
         TASK_SET_LABEL("InitStressTermsForElems");
-        DEPOBJ_UPDATE(e[b/EBS],     in);
-        DEPOBJ_UPDATE(sigxx[b/EBS], out);
+        DEPOBJ_UPDATE(e,     b/EBS, in);
+        DEPOBJ_UPDATE(sigxx, b/EBS, out);
         # pragma omp task default(none)                             \
             firstprivate(domain, b, sigxx, sigyy, sigzz, numElem)   \
             shared(EBS)                                             \
-            DEPEND_OBJ(e[b/EBS])                                    \
-            DEPEND_OBJ(sigxx[b/EBS])
+            DEPEND_OBJ(e, b/EBS)                                    \
+            DEPEND_OBJ(sigxx, b/EBS)
         {
             Index_t start = b;
             Index_t end = MIN(start + EBS, numElem);
@@ -2252,9 +2283,10 @@ void CalcVelocityForNodes(Domain * domain)
 static
 void CalcPositionForNodes(Domain * domain)
 {
-    const Real_t * domain_x     = domain->m_x.data();   (void) domain_x;
-    const Real_t * domain_y     = domain->m_y.data();   (void) domain_y;
-    const Real_t * domain_z     = domain->m_z.data();   (void) domain_z;
+    const Real_t * domain_x    = domain->m_x.data();  (void) domain_x;
+    const Real_t * domain_y    = domain->m_y.data();  (void) domain_y;
+    const Real_t * domain_z    = domain->m_z.data();  (void) domain_z;
+
     const Real_t * domain_xd    = domain->m_xd.data();  (void) domain_xd;
     const Real_t * domain_yd    = domain->m_yd.data();  (void) domain_yd;
     const Real_t * domain_zd    = domain->m_zd.data();  (void) domain_zd;
@@ -2541,9 +2573,6 @@ void CalcKinematicsForElems(Domain * domain)
     Index_t numElem = domain->numElem();
     for (Index_t b = 0; b < numElem ; b += EBS)
     {
-        task_dependency_t dependencies[2];
-        dependencies[0] = dependencies_domain_x_y_z[b/EBS];
-        dependencies[1] = dependencies_domain_xd_yd_zd[b/EBS];
         TASK_SET_COLOR(iter);
         TASK_SET_LABEL("CalcKinematicsForElems");
         #pragma omp task default(none)                                              \
@@ -2675,9 +2704,6 @@ void CalcMonotonicQGradientsForElems(Domain * domain)
     // element loop to do some stuff not included in the elemlib function.
     for (Index_t b = 0; b < numElem ; b += EBS)
     {
-        task_dependency_t dependencies[2];
-        dependencies[0] = dependencies_domain_x_y_z[b/EBS];
-        dependencies[1] = dependencies_domain_xd_yd_zd[b/EBS];
         TASK_SET_COLOR(iter);
         TASK_SET_LABEL("CalcMonotonicQGradientsForElems");
         #pragma omp task default(none)                                  \
@@ -3693,11 +3719,11 @@ void CalcCourantConstraintForElems(Domain * domain, Index_t r)
         // compute minimum for this block of this region
         TASK_SET_COLOR(iter);
         TASK_SET_LABEL("CalcCourantConstraintForElems");
-        DEPOBJ_UPDATE(dtcourant[0], in);
+        DEPOBJ_UPDATE(dtcourant, 0, in);
         #pragma omp task default(none)                              \
             firstprivate(domain, b, regElemSize, r)                 \
             shared(dt_reduction_courant, EBS)                       \
-            DEPEND_OBJ(dtcourant[0])                                \
+            DEPEND_OBJ(dtcourant, 0)                                \
             DEPEND_INOUTSET(dt_courant_deps[r] + 2*(b/EBS)+0, 1)    \
             DEPEND_IN(dt_courant_deps[r] + 2*(b/EBS)+1, 1)
         {
@@ -3777,11 +3803,11 @@ void CalcHydroConstraintForElems(Domain * domain, Index_t r)
     {
         TASK_SET_COLOR(iter);
         TASK_SET_LABEL("CalcHydroConstraintForElems");
-        DEPOBJ_UPDATE(dthydro[0], in);
+        DEPOBJ_UPDATE(dthydro, 0, in);
         #pragma omp task default(none)                          \
             firstprivate(domain, b, regElemSize, r)             \
             shared(dt_reduction_hydro, EBS)                     \
-            DEPEND_OBJ(dthydro[0])                              \
+            DEPEND_OBJ(dthydro, 0)                              \
             DEPEND_INOUTSET(dt_hydro_deps[r] + 2*(b/EBS)+0, 1)  \
             DEPEND_INOUTSET(dt_hydro_deps[r] + 2*(b/EBS)+1, 1)
         {
@@ -3844,12 +3870,12 @@ void CalcTimeConstraintsForElems(Domain * domain)
     // Initialize conditions to a very large value
     TASK_SET_COLOR(iter);
     TASK_SET_LABEL("CalcTimeConstraintsForElems_init");
-    DEPOBJ_UPDATE(dthydro[0], out);
-    DEPOBJ_UPDATE(dtcourant[0], out);
+    DEPOBJ_UPDATE(dthydro, 0, out);
+    DEPOBJ_UPDATE(dtcourant, 0, out);
     # pragma omp task default(none)                             \
         firstprivate(domain)                                    \
-        DEPEND_OBJ(dthydro[0])                                  \
-        DEPEND_OBJ(dtcourant[0])
+        DEPEND_OBJ(dthydro, 0)                                  \
+        DEPEND_OBJ(dtcourant, 0)
     {
         domain->dtcourant() = 1.0e+20;
         domain->dthydro()   = 1.0e+20;
@@ -3867,12 +3893,12 @@ void CalcTimeConstraintsForElems(Domain * domain)
      // reduce minimum dt courant and hydro of each region
     TASK_SET_COLOR(iter);
     TASK_SET_LABEL("CalcTimeConstraintsForElems_reduce_courant");
-    DEPOBJ_UPDATE(dtcourant[0], out);
+    DEPOBJ_UPDATE(dtcourant, 0, out);
     # pragma omp task default(none)             \
         firstprivate(domain, numReg)            \
         shared(dt_reduction_courant)            \
         depend(inout: dt_reduction_courant)     \
-        DEPEND_OBJ(dtcourant[0])
+        DEPEND_OBJ(dtcourant, 0)
     {
         Real_t & dtcourant = domain->dtcourant();
         for (Index_t r = 0 ; r < numReg ; ++r)
@@ -3888,12 +3914,12 @@ void CalcTimeConstraintsForElems(Domain * domain)
 
     TASK_SET_COLOR(iter);
     TASK_SET_LABEL("CalcTimeConstraintsForElems_reduce_hydro");
-    DEPOBJ_UPDATE(dthydro[0], out);
+    DEPOBJ_UPDATE(dthydro, 0, out);
     # pragma omp task default(none)         \
         firstprivate(domain, numReg)        \
         shared(dt_reduction_hydro)          \
         depend(inout: dt_reduction_hydro)   \
-        DEPEND_OBJ(dthydro[0])
+        DEPEND_OBJ(dthydro, 0)
     {
         Real_t & dthydro = domain->dthydro();
         for (Index_t r = 0 ; r < numReg ; ++r)
