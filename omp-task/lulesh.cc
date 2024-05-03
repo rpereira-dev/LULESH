@@ -303,8 +303,8 @@ static struct {
         deps.D = (omp_depend_t *) malloc(sizeof(omp_depend_t) * N); \
     } while (0);
 
-# define DEPOBJ_SET(D, I, ...)                                                  \
-    do {                                                                        \
+# define DEPOBJ_SET(D, I, ...)                                          \
+    do {                                                                \
         _Pragma(STRINGIFY(omp depobj(deps.D[I]) depend(__VA_ARGS__)))   \
     } while (0);
 
@@ -1238,6 +1238,8 @@ void InitStressTermsForElems(Domain * domain,
         Real_t *sigxx, Real_t *sigyy, Real_t *sigzz,
         Index_t numElem)
 {
+    const Real_t * domain_e = domain->m_e.data();   (void) domain_e;
+
     //
     // pull in the stresses appropriate to the hydro integration
     //
@@ -1251,8 +1253,8 @@ void InitStressTermsForElems(Domain * domain,
         # pragma omp task default(none)                             \
             firstprivate(domain, b, sigxx, sigyy, sigzz, numElem)   \
             shared(EBS)                                             \
-            DEPEND_OBJ(e, b/EBS)                                    \
-            DEPEND_OBJ(sigxx, b/EBS)
+            depend(in: domain_e[b])                                 \
+            depend(out: sigxx[b])
         {
             Index_t start = b;
             Index_t end = MIN(start + EBS, numElem);
@@ -2246,11 +2248,12 @@ void CalcVelocityForNodes(Domain * domain)
     {
         TASK_SET_COLOR(iter);
         TASK_SET_LABEL("CalcVelocityForNodes");
+        DEPOBJ_UPDATE(deltatime, 0, in);
         # pragma omp task default(none)                                     \
             firstprivate(domain, b, numNode)                                \
             shared(NBS)                                                     \
-            depend(in:      domain->m_deltatime,                            \
-                            domain_xdd[b], domain_ydd[b], domain_zdd[b])    \
+            DEPEND_OBJ(deltatime, 0)                                        \
+            depend(in:      domain_xdd[b], domain_ydd[b], domain_zdd[b])    \
             depend(inout:   domain_xd[b],  domain_yd[b],  domain_zd[b])
         {
             const Real_t dt = domain->deltatime();
@@ -2296,10 +2299,12 @@ void CalcPositionForNodes(Domain * domain)
     {
         TASK_SET_COLOR(iter);
         TASK_SET_LABEL("CalcPositionForNodes");
-        # pragma omp task default(none)                                                 \
-            firstprivate(domain, b, numNode)                                            \
-            shared(NBS)                                                                 \
-            depend(in: domain->m_deltatime, domain_xd[b], domain_yd[b], domain_zd[b])   \
+        DEPOBJ_UPDATE(deltatime, 0, in);
+        # pragma omp task default(none)                             \
+            firstprivate(domain, b, numNode)                        \
+            shared(NBS)                                             \
+            DEPEND_OBJ(deltatime, 0)                                \
+            depend(in: domain_xd[b], domain_yd[b], domain_zd[b])    \
             depend(out: domain_x[b], domain_y[b], domain_z[b])
         {
             const Real_t dt = domain->deltatime();
@@ -2575,10 +2580,12 @@ void CalcKinematicsForElems(Domain * domain)
     {
         TASK_SET_COLOR(iter);
         TASK_SET_LABEL("CalcKinematicsForElems");
+        DEPOBJ_UPDATE(deltatime, 0, in);
         #pragma omp task default(none)                                              \
             firstprivate(domain, b, numElem, iter)                                  \
             shared(EBS, vnew)                                                       \
-            depend(in:  domain->m_deltatime, domain_v[b])                           \
+            DEPEND_OBJ(deltatime, 0)                                                \
+            depend(in:  domain_v[b])                                                \
             depend(out: vnew[b],            domain_delv[b],     domain_arealg[b],   \
                         domain->m_dxx[b])                                           \
             DEPEND_IN(dependencies_domain_x_y_z + (b/EBS), 1)                       \
