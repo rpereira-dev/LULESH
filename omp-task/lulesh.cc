@@ -290,6 +290,23 @@ static struct {
     omp_depend_t * x;
     omp_depend_t * y;
     omp_depend_t * z;
+
+    omp_depend_t * xd;
+    omp_depend_t * yd;
+    omp_depend_t * zd;
+
+    omp_depend_t * xdd;
+    omp_depend_t * ydd;
+    omp_depend_t * zdd;
+
+    omp_depend_t * fx;
+
+    omp_depend_t * ss;
+    omp_depend_t * vdov;
+    omp_depend_t * arealg;
+    omp_depend_t * delv;
+    omp_depend_t * v;
+
 } deps;
 
 #define STRINGIFY(a) #a
@@ -307,6 +324,9 @@ static struct {
     do {                                                                \
         _Pragma(STRINGIFY(omp depobj(deps.D[I]) depend(__VA_ARGS__)))   \
     } while (0);
+
+# define DEPOBJ_SET_ELEMS(D, B) DEPOBJ_SET(D, B/EBS, in: D[B])
+# define DEPOBJ_SET_NODES(D, B) DEPOBJ_SET(D, B/NBS, in: D[B])
 
 # define DEPEND_OBJ(D, I) depend(depobj: deps.D[I])
 
@@ -367,15 +387,16 @@ static void init_deps(Domain * domain)
 
     // dimensions
     const Index_t numElem = domain->numElem();
-    const Index_t n_elem_blocks = numElem/EBS + (numElem % EBS != 0);
+    const Index_t n_elem_blocks = numElem/EBS + 1;
 
     const Index_t numNode = domain->numNode();
-    const Index_t n_node_blocks = numNode/NBS + (numNode % NBS != 0);
+    const Index_t n_node_blocks = numNode/NBS + 1;
 
     // data pointers
     const Real_t * x = domain->m_x.data();
     const Real_t * y = domain->m_y.data();
     const Real_t * z = domain->m_z.data();
+
     const Real_t * xd = domain->m_xd.data();
     const Real_t * yd = domain->m_yd.data();
     const Real_t * zd = domain->m_zd.data();
@@ -384,27 +405,40 @@ static void init_deps(Domain * domain)
     const Real_t * ydd = domain->m_ydd.data();
     const Real_t * zdd = domain->m_zdd.data();
 
-    const Real_t * domain_ss        = domain->m_ss.data();
-    const Real_t * domain_vdov      = domain->m_vdov.data();
-    const Real_t * domain_arealg    = domain->m_arealg.data();
+    const Real_t * fx = domain->m_fx.data(); (void) fx;
+
+    const Real_t * ss     = domain->m_ss.data();
+    const Real_t * vdov   = domain->m_vdov.data();
+    const Real_t * arealg = domain->m_arealg.data();
+    const Real_t * delv   = domain->m_delv.data();
+    const Real_t * v      = domain->m_v.data();
 
     const Real_t * e = domain->m_e.data();
 
-    // allocate dependences objects
+    // allocate and set dependences objects
     DEPOBJ_ALLOC(e,       n_elem_blocks);
     DEPOBJ_ALLOC(sigxx,   n_elem_blocks);
+    DEPOBJ_ALLOC(ss,      n_elem_blocks);
+    DEPOBJ_ALLOC(vdov,    n_elem_blocks);
+    DEPOBJ_ALLOC(arealg,  n_elem_blocks);
+    DEPOBJ_ALLOC(delv,    n_elem_blocks);
+    DEPOBJ_ALLOC(v,       n_elem_blocks);
     DEPOBJ_ALLOC(xyz,     n_elem_blocks);
 
-    // set dependences object
     for (Index_t b = 0; b < numElem ; b += EBS)
     {
         TASK_SET_COLOR(iter);
         TASK_SET_LABEL("init elems");
-        # pragma omp task
+//        # pragma omp task default(shared)
         {
             // build depobj regularly
-            DEPOBJ_SET(sigxx, b/EBS, in: sigxx[b]);
-            DEPOBJ_SET(e,     b/EBS, in: e[b]);
+            DEPOBJ_SET_ELEMS(sigxx,  b);
+            DEPOBJ_SET_ELEMS(e,      b);
+            DEPOBJ_SET_ELEMS(ss,     b);
+            DEPOBJ_SET_ELEMS(vdov,   b);
+            DEPOBJ_SET_ELEMS(arealg, b);
+            DEPOBJ_SET_ELEMS(delv,   b);
+            DEPOBJ_SET_ELEMS(v,      b);
 
             // build the indirection array for irregular dependencies
             // TODO
@@ -450,19 +484,39 @@ static void init_deps(Domain * domain)
     }
 
     // set dependences object
-    DEPOBJ_ALLOC(x,       n_node_blocks);
-    DEPOBJ_ALLOC(y,       n_node_blocks);
-    DEPOBJ_ALLOC(z,       n_node_blocks);
+    DEPOBJ_ALLOC(x,   n_node_blocks);
+    DEPOBJ_ALLOC(y,   n_node_blocks);
+    DEPOBJ_ALLOC(z,   n_node_blocks);
+
+    DEPOBJ_ALLOC(xd,  n_node_blocks);
+    DEPOBJ_ALLOC(yd,  n_node_blocks);
+    DEPOBJ_ALLOC(zd,  n_node_blocks);
+
+    DEPOBJ_ALLOC(xdd, n_node_blocks);
+    DEPOBJ_ALLOC(ydd, n_node_blocks);
+    DEPOBJ_ALLOC(zdd, n_node_blocks);
+
+    DEPOBJ_ALLOC(fx, n_node_blocks);
 
     for (Index_t b = 0; b < numNode ; b += NBS)
     {
         TASK_SET_COLOR(iter);
         TASK_SET_LABEL("init nodes");
-        # pragma omp task
+        // # pragma omp task default(shared)
         {
-            DEPOBJ_SET(x, b/NBS, in: x[b]);
-            DEPOBJ_SET(y, b/NBS, in: y[b]);
-            DEPOBJ_SET(z, b/NBS, in: z[b]);
+            DEPOBJ_SET_NODES(x, b);
+            DEPOBJ_SET_NODES(y, b);
+            DEPOBJ_SET_NODES(z, b);
+
+            DEPOBJ_SET_NODES(xd, b);
+            DEPOBJ_SET_NODES(yd, b);
+            DEPOBJ_SET_NODES(zd, b);
+
+            DEPOBJ_SET_NODES(xdd, b);
+            DEPOBJ_SET_NODES(ydd, b);
+            DEPOBJ_SET_NODES(zdd, b);
+
+            DEPOBJ_SET_NODES(fx, b);
         }
     }
 
@@ -714,11 +768,11 @@ static void init_deps(Domain * domain)
                 for (std::map<Index_t, bool>::iterator it = blocks.begin(); it != blocks.end(); ++it)
                 {
                     const Index_t index = it->first;
-                    in_courant->addrs[3 * j + 0] = (int *) (domain_ss     + index);
-                    in_courant->addrs[3 * j + 1] = (int *) (domain_vdov   + index);
-                    in_courant->addrs[3 * j + 2] = (int *) (domain_arealg + index);
+                    in_courant->addrs[3 * j + 0] = (int *) (ss     + index);
+                    in_courant->addrs[3 * j + 1] = (int *) (vdov   + index);
+                    in_courant->addrs[3 * j + 2] = (int *) (arealg + index);
 
-                    in_hydro->addrs[j] = (int *) (domain_vdov + index);
+                    in_hydro->addrs[j] = (int *) (vdov + index);
 
                     ++j;
                 }
@@ -876,7 +930,7 @@ static void init_deps(Domain * domain)
                     in->addrs[j1++] = (int *) (domain->m_delx_eta   + index);
                     in->addrs[j1++] = (int *) (domain->m_delx_zeta  + index);
 
-                    in->addrs[j1++] = (int *) (domain_vdov       + index);
+                    in->addrs[j1++] = (int *) (vdov       + index);
                     in->addrs[j1++] = (int *) (vnew              + index);
 
                     inoutset->addrs[j2++] = (int *) (domain_qq + index);
@@ -912,7 +966,7 @@ static void init_deps(Domain * domain)
         Real_t * domain_e       = domain->m_e.data();
         Real_t * domain_qq      = domain->m_qq.data();
         Real_t * domain_delv    = domain->m_delv.data();
-        Real_t * domain_ss      = domain->m_ss.data();
+        Real_t * ss      = domain->m_ss.data();
 
         const Index_t regElemSize   = domain->regElemSize(r);
         const Index_t * regElemList = domain->regElemlist(r);
@@ -973,7 +1027,7 @@ static void init_deps(Domain * domain)
 
                     inoutset_e->addrs[j] = (int *) (domain_e + index);
 
-                    inoutset_ss->addrs[j] = (int *) (domain_ss + index);
+                    inoutset_ss->addrs[j] = (int *) (ss + index);
 
                     ++j;
                 }
@@ -1238,8 +1292,6 @@ void InitStressTermsForElems(Domain * domain,
         Real_t *sigxx, Real_t *sigyy, Real_t *sigzz,
         Index_t numElem)
 {
-    const Real_t * domain_e = domain->m_e.data();   (void) domain_e;
-
     //
     // pull in the stresses appropriate to the hydro integration
     //
@@ -1253,8 +1305,8 @@ void InitStressTermsForElems(Domain * domain,
         # pragma omp task default(none)                             \
             firstprivate(domain, b, sigxx, sigyy, sigzz, numElem)   \
             shared(EBS)                                             \
-            depend(in: domain_e[b])                                 \
-            depend(out: sigxx[b])
+            DEPEND_OBJ(e, b/EBS)                                    \
+            DEPEND_OBJ(sigxx, b/EBS)
         {
             Index_t start = b;
             Index_t end = MIN(start + EBS, numElem);
@@ -1476,18 +1528,17 @@ void IntegrateStressForElems(Domain * domain)
 {
     Index_t numElem = domain->numElem();
 
-    const Real_t * domain_e = domain->m_e.data();   (void) domain_e;
-
     // loop over all elements
     for (Index_t b = 0; b < numElem ; b += EBS)
     {
         TASK_SET_COLOR(iter);
         TASK_SET_LABEL("IntegrateStressForElems1");
+        DEPOBJ_UPDATE(sigxx, b/EBS, in);
         # pragma omp task default(none)                             \
             firstprivate(domain, b, numElem)                        \
             shared( EBS, determ, sigxx, sigyy, sigzz,               \
                     fx_elem, fy_elem, fz_elem)                      \
-            depend(in: sigxx[b])                                    \
+            DEPEND_OBJ(sigxx, b/EBS)                                \
             depend(out: determ[b], fx_elem[8*b])                    \
             DEPEND_IN(dependencies_domain_x_y_z + (b/EBS), 1)
         {
@@ -1526,16 +1577,16 @@ void IntegrateStressForElems(Domain * domain)
 
     // we need to copy the data out of the temporary
     // arrays used above into the final forces field
-    const Real_t * domain_fx = domain->m_fx.data(); (void) domain_fx;
     Index_t numNode = domain->numNode();
     for (Index_t b = 0; b < numNode ; b += NBS)
     {
         TASK_SET_COLOR(iter);
         TASK_SET_LABEL("IntegrateStressForElems2");
+        DEPOBJ_UPDATE(fx, b/NBS, out);
         # pragma omp task default(none)                         \
             firstprivate(domain, b, numNode)                    \
             shared(NBS, fx_elem, fy_elem, fz_elem)              \
-            depend(out: domain_fx[b])                           \
+            DEPEND_OBJ(fx, b/NBS)                               \
             DEPEND_IN(dependencies_fx_fy_fz_elem + (b/NBS), 1)
         {
             Index_t start = b;
@@ -1694,8 +1745,8 @@ void CalcFBHourglassForceForElems( Domain * domain,
                                    Real_t hourg, Index_t numElem,
                                    Index_t numNode)
 {
-    const Real_t * domain_v = domain->m_v.data();   (void) domain_v;
-    const Real_t * domain_ss = domain->m_ss.data(); (void) domain_ss;
+    const Real_t * v = domain->m_v.data();   (void) v;
+    const Real_t * ss = domain->m_ss.data(); (void) ss;
 
     for (Index_t b = 0; b < numElem ; b += EBS)
     {
@@ -1706,7 +1757,7 @@ void CalcFBHourglassForceForElems( Domain * domain,
                             x8n, y8n, z8n, dvdx, dvdy, dvdz)                    \
             shared( EBS, gamma_v,                                               \
                     fx_elem_FBH, fy_elem_FBH, fz_elem_FBH)                      \
-            depend(in:  determ[b], domain_v[b], domain_ss[b])                   \
+            depend(in:  determ[b], v[b], ss[b])                   \
             depend(out: fx_elem_FBH[8*b])                                       \
             DEPEND_IN(dependencies_domain_xd_yd_zd + (b/EBS), 1)
         {
@@ -1863,13 +1914,13 @@ void CalcFBHourglassForceForElems( Domain * domain,
     // Collect the data from the local arrays into the final force array
     for (Index_t b = 0; b < numNode ; b += NBS)
     {
-        const Real_t * domain_fx = domain->m_fx.data(); (void) domain_fx;
         TASK_SET_COLOR(iter);
         TASK_SET_LABEL("CalcFBHourglassForceForElems2");
+        DEPOBJ_UPDATE(fx, b/NBS, out);
         # pragma omp task default(none)                             \
             firstprivate(domain, b, numNode)                        \
             shared(NBS, fx_elem_FBH, fy_elem_FBH, fz_elem_FBH)      \
-            depend(out: domain_fx[b])                               \
+            DEPEND_OBJ(fx, b/NBS)                                   \
             DEPEND_IN(dependencies_fx_fy_fz_elem_FBH + (b/NBS), 1)
         {
             Index_t start = b;
@@ -1901,18 +1952,19 @@ static
 void CalcHourglassControlForElems(Domain * domain, Real_t determ[], Real_t hgcoef)
 {
     Index_t numElem = domain->numElem() ;
-    const Real_t * domain_v = domain->m_v.data();   (void) domain_v;
+    const Real_t * v = domain->m_v.data();   (void) v;
 
     for (Index_t b = 0; b < numElem ; b += EBS)
     {
         TASK_SET_COLOR(iter);
         TASK_SET_LABEL("CalcHourglassControlForElems");
+        DEPOBJ_UPDATE(v, b/EBS, in);
         # pragma omp task default(none)                         \
             firstprivate(domain, b, numElem, determ)            \
             shared( gamma_v, EBS,                               \
                     dvdx, dvdy, dvdz,                           \
                     x8n, y8n, z8n)                              \
-            depend(in:  domain_v[b])                            \
+            DEPEND_OBJ(v, b/EBS)                                \
             depend(out: determ[b])                              \
             DEPEND_IN(dependencies_domain_x_y_z + (b/EBS), 1)
         {
@@ -1984,16 +2036,16 @@ static void CalcForceForNodes(Domain * domain)
     CommRecv(domain, MSG_FX_FY_FZ);
 #endif
 
-    const Real_t * domain_fx = domain->m_fx.data(); (void) domain_fx;
     Index_t numNode = domain->numNode();
     for (Index_t b = 0; b < numNode ; b += NBS)
     {
         TASK_SET_COLOR(iter);
         TASK_SET_LABEL("CalcForceForNodes");
+        DEPOBJ_UPDATE(fx, b/NBS, out);
         # pragma omp task default(none)         \
             firstprivate(domain, b, numNode)    \
             shared(NBS)                         \
-            depend(out: domain_fx[b])
+            DEPEND_OBJ(fx, b/NBS)
         {
             Index_t start = b;
             Index_t end = MIN(start + NBS, numNode);
@@ -2021,20 +2073,22 @@ static void CalcForceForNodes(Domain * domain)
 static
 void CalcAccelerationForNodes(Domain * domain)
 {
-    const Real_t * domain_fx    = domain->m_fx.data();  (void) domain_fx;
-    const Real_t * domain_xdd   = domain->m_xdd.data(); (void) domain_xdd;
-    const Real_t * domain_ydd   = domain->m_ydd.data(); (void) domain_ydd;
-    const Real_t * domain_zdd   = domain->m_zdd.data(); (void) domain_zdd;
     Index_t numNode = domain->numNode();
     for (Index_t b = 0; b < numNode ; b += NBS)
     {
         TASK_SET_COLOR(iter);
         TASK_SET_LABEL("CalcAccelerationForNodes");
+        DEPOBJ_UPDATE(fx,  b/NBS, in);
+        DEPOBJ_UPDATE(xdd, b/NBS, out);
+        DEPOBJ_UPDATE(ydd, b/NBS, out);
+        DEPOBJ_UPDATE(zdd, b/NBS, out);
         # pragma omp task default(none)                             \
             firstprivate(domain, b, numNode)                        \
             shared(NBS)                                             \
-            depend(in: domain_fx[b])                                \
-            depend(out: domain_xdd[b], domain_ydd[b], domain_zdd[b])
+            DEPEND_OBJ(fx,  b/NBS)                                  \
+            DEPEND_OBJ(xdd, b/NBS)                                  \
+            DEPEND_OBJ(ydd, b/NBS)                                  \
+            DEPEND_OBJ(zdd, b/NBS)
         {
             Index_t start = b;
             Index_t end = MIN(start + NBS, numNode);
@@ -2236,25 +2290,28 @@ void ApplyAccelerationBoundaryConditionsForNodes(Domain * domain)
 static
 void CalcVelocityForNodes(Domain * domain)
 {
-    const Real_t * domain_xd    = domain->m_xd.data();  (void) domain_xd;
-    const Real_t * domain_yd    = domain->m_yd.data();  (void) domain_yd;
-    const Real_t * domain_zd    = domain->m_zd.data();  (void) domain_zd;
-    const Real_t * domain_xdd   = domain->m_xdd.data(); (void) domain_xdd;
-    const Real_t * domain_ydd   = domain->m_ydd.data(); (void) domain_ydd;
-    const Real_t * domain_zdd   = domain->m_zdd.data(); (void) domain_zdd;
-
     Index_t numNode = domain->numNode();
     for (Index_t b = 0; b < numNode ; b += NBS)
     {
         TASK_SET_COLOR(iter);
         TASK_SET_LABEL("CalcVelocityForNodes");
         DEPOBJ_UPDATE(deltatime, 0, in);
-        # pragma omp task default(none)                                     \
-            firstprivate(domain, b, numNode)                                \
-            shared(NBS)                                                     \
-            DEPEND_OBJ(deltatime, 0)                                        \
-            depend(in:      domain_xdd[b], domain_ydd[b], domain_zdd[b])    \
-            depend(inout:   domain_xd[b],  domain_yd[b],  domain_zd[b])
+        DEPOBJ_UPDATE(xdd, b/NBS, in);
+        DEPOBJ_UPDATE(ydd, b/NBS, in);
+        DEPOBJ_UPDATE(zdd, b/NBS, in);
+        DEPOBJ_UPDATE(xd,  b/NBS, out);
+        DEPOBJ_UPDATE(yd,  b/NBS, out);
+        DEPOBJ_UPDATE(zd,  b/NBS, out);
+        # pragma omp task default(none)         \
+            firstprivate(domain, b, numNode)    \
+            shared(NBS)                         \
+            DEPEND_OBJ(deltatime, 0)            \
+            DEPEND_OBJ(xdd, b/NBS)              \
+            DEPEND_OBJ(ydd, b/NBS)              \
+            DEPEND_OBJ(zdd, b/NBS)              \
+            DEPEND_OBJ(xd,  b/NBS)              \
+            DEPEND_OBJ(yd,  b/NBS)              \
+            DEPEND_OBJ(zd,  b/NBS)
         {
             const Real_t dt = domain->deltatime();
             const Real_t u_cut = domain->u_cut() ;
@@ -2286,26 +2343,28 @@ void CalcVelocityForNodes(Domain * domain)
 static
 void CalcPositionForNodes(Domain * domain)
 {
-    const Real_t * domain_x    = domain->m_x.data();  (void) domain_x;
-    const Real_t * domain_y    = domain->m_y.data();  (void) domain_y;
-    const Real_t * domain_z    = domain->m_z.data();  (void) domain_z;
-
-    const Real_t * domain_xd    = domain->m_xd.data();  (void) domain_xd;
-    const Real_t * domain_yd    = domain->m_yd.data();  (void) domain_yd;
-    const Real_t * domain_zd    = domain->m_zd.data();  (void) domain_zd;
-
     Index_t numNode = domain->numNode();
     for (Index_t b = 0; b < numNode ; b += NBS)
     {
         TASK_SET_COLOR(iter);
         TASK_SET_LABEL("CalcPositionForNodes");
         DEPOBJ_UPDATE(deltatime, 0, in);
+        DEPOBJ_UPDATE(xd, b/NBS, in);
+        DEPOBJ_UPDATE(yd, b/NBS, in);
+        DEPOBJ_UPDATE(zd, b/NBS, in);
+        DEPOBJ_UPDATE(x,  b/NBS, out);
+        DEPOBJ_UPDATE(y,  b/NBS, out);
+        DEPOBJ_UPDATE(z,  b/NBS, out);
         # pragma omp task default(none)                             \
             firstprivate(domain, b, numNode)                        \
             shared(NBS)                                             \
             DEPEND_OBJ(deltatime, 0)                                \
-            depend(in: domain_xd[b], domain_yd[b], domain_zd[b])    \
-            depend(out: domain_x[b], domain_y[b], domain_z[b])
+            DEPEND_OBJ(xd, b/NBS)                                   \
+            DEPEND_OBJ(yd, b/NBS)                                   \
+            DEPEND_OBJ(zd, b/NBS)                                   \
+            DEPEND_OBJ(x,  b/NBS)                                   \
+            DEPEND_OBJ(y,  b/NBS)                                   \
+            DEPEND_OBJ(z,  b/NBS)
         {
             const Real_t dt = domain->deltatime();
             Index_t start = b;
@@ -2570,24 +2629,23 @@ void CalcElemVelocityGradient( const Real_t* const xvel,
 static
 void CalcKinematicsForElems(Domain * domain)
 {
-    /* OpenMP dependencies */
-    const Real_t * domain_v         = domain->m_v.data();       (void) domain_v;
-    const Real_t * domain_delv      = domain->m_delv.data();    (void) domain_delv;
-    const Real_t * domain_arealg    = domain->m_arealg.data();  (void) domain_arealg;
-
     Index_t numElem = domain->numElem();
     for (Index_t b = 0; b < numElem ; b += EBS)
     {
         TASK_SET_COLOR(iter);
         TASK_SET_LABEL("CalcKinematicsForElems");
-        DEPOBJ_UPDATE(deltatime, 0, in);
+        DEPOBJ_UPDATE(deltatime, 0,  in);
+        DEPOBJ_UPDATE(v,         b/EBS, in);
+        DEPOBJ_UPDATE(arealg,    b/EBS, out);
+        DEPOBJ_UPDATE(delv,      b/EBS, out);
         #pragma omp task default(none)                                              \
             firstprivate(domain, b, numElem, iter)                                  \
             shared(EBS, vnew)                                                       \
             DEPEND_OBJ(deltatime, 0)                                                \
-            depend(in:  domain_v[b])                                                \
-            depend(out: vnew[b],            domain_delv[b],     domain_arealg[b],   \
-                        domain->m_dxx[b])                                           \
+            DEPEND_OBJ(arealg, b/EBS)                                               \
+            DEPEND_OBJ(delv, b/EBS)                                                 \
+            DEPEND_OBJ(v, b/EBS)                                                    \
+            depend(out: vnew[b], domain->m_dxx[b])                                  \
             DEPEND_IN(dependencies_domain_x_y_z + (b/EBS), 1)                       \
             DEPEND_IN(dependencies_domain_xd_yd_zd + (b/EBS), 1)
         {
@@ -2663,18 +2721,17 @@ void CalcLagrangeElements(Domain * domain)
 
     CalcKinematicsForElems(domain);
 
-    const Real_t * domain_vdov  = domain->m_vdov.data();  (void) domain_vdov;
-
     // element loop to do some stuff not included in the elemlib function.
     for (Index_t b = 0; b < numElem ; b += EBS)
     {
         TASK_SET_COLOR(iter);
         TASK_SET_LABEL("CalcLagrangeElements");
+        DEPOBJ_UPDATE(vdov, b/EBS, out);
         #pragma omp task default(none)          \
             firstprivate(domain, b, numElem)    \
             shared(EBS)                         \
             depend(inout:   domain->m_dxx[b])   \
-            depend(out:     domain_vdov[b])
+            DEPEND_OBJ(vdov, b/EBS)
         {
             Index_t start = b;
             Index_t end = MIN(start + EBS, numElem);
@@ -3630,11 +3687,11 @@ void ApplyMaterialPropertiesForElems(Domain * domain)
             // just leave it in, please
             TASK_SET_COLOR(iter);
             TASK_SET_LABEL("ApplyMaterialPropertiesForElems");
-            const Real_t * domain_v = domain->m_v.data(); (void)domain_v;
+            DEPOBJ_UPDATE(v, b/EBS, in);
             #pragma omp task default(none)          \
                 firstprivate(domain, b, numElem)    \
                 shared(EBS)                         \
-                depend(in: domain_v[b])
+                DEPEND_OBJ(v, b/EBS)
             {
                 Index_t start = b;
                 Index_t end = MIN(start + EBS, numElem);
@@ -3672,17 +3729,18 @@ void UpdateVolumesForElems(Domain * domain)
     Index_t numElem = domain->numElem();
     if (numElem)
     {
-        const Real_t * domain_v = domain->m_v.data(); (void)domain_v;
+        const Real_t * v = domain->m_v.data(); (void)v;
         for (Index_t b = 0; b < numElem ; b += EBS)
         {
             // Bound the updated relative volumes with eosvmin/max
             TASK_SET_COLOR(iter);
             TASK_SET_LABEL("UpdateVolumesForElems");
+            DEPOBJ_UPDATE(v, b/EBS, out);
             #pragma omp task default(none)              \
                 firstprivate(domain, b, numElem, vnew)  \
                 shared(EBS)                             \
                 depend(in: vnew[b])                     \
-                depend(out: domain_v[b])
+                DEPEND_OBJ(v, b/EBS)
             {
                 Real_t v_cut = domain->v_cut();
                 Index_t start = b;
