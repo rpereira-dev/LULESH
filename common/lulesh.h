@@ -100,12 +100,13 @@ void Release(T **ptr)
 }
 
 static inline void
-lulesh_abort(void)
+lulesh_abort(int err)
 {
 #if USE_MPI
     MPI_Abort(MPI_COMM_WORLD, VolumeError) ;
 #else
-    exit(VolumeError);
+    fprintf(stderr, "Lulesh aborted err %d\n", err);
+    exit(err);
 #endif
 }
 

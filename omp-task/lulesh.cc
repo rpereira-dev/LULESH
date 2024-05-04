@@ -363,6 +363,7 @@ static struct {
 # define DEPOBJ_SET_REGION_ELEMS(D, R, B)   DEPOBJ_SET(D[R], B/EBS, in: D[B])
 
 # define DEPEND_OBJ(D, I) depend(depobj: deps.D[I])
+// # define DEPEND_OBJ(D, I)
 
 # define IN(ADDR, N)       iterator(i=0:N), in:       (((char *)(ADDR[i]))[0])
 # define OUT(ADDR, N)      iterator(i=0:N), out:      (((char *)(ADDR[i]))[0])
@@ -1437,6 +1438,8 @@ void InitStressTermsForElems(Domain * domain,
         Real_t *sigxx, Real_t *sigyy, Real_t *sigzz,
         Index_t numElem)
 {
+     Real_t * domain_e       = domain->m_e.data();
+
     //
     // pull in the stresses appropriate to the hydro integration
     //
@@ -1451,7 +1454,9 @@ void InitStressTermsForElems(Domain * domain,
             firstprivate(domain, b, sigxx, sigyy, sigzz, numElem)   \
             shared(EBS)                                             \
             DEPEND_OBJ(e, b/EBS)                                    \
-            DEPEND_OBJ(sigxx, b/EBS)
+            DEPEND_OBJ(sigxx, b/EBS)   \
+            depend(in: domain_e[b])                                 \
+            depend(out: sigxx[b])
         {
             Index_t start = b;
             Index_t end = MIN(start + EBS, numElem);
@@ -1686,6 +1691,8 @@ void IntegrateStressForElems(Domain * domain)
                     fx_elem, fy_elem, fz_elem)                      \
             DEPEND_OBJ(sigxx, b/EBS)                                \
             DEPEND_OBJ(determ, b/EBS)                               \
+            depend(in: sigxx[b])                                    \
+            depend(out: determ[b]) \
             depend(out: fx_elem[8*b])                               \
             DEPEND_IN(dependencies_domain_x_y_z + (b/EBS), 1)
         {
@@ -1707,7 +1714,7 @@ void IntegrateStressForElems(Domain * domain)
                         B, &determ[k]);
 
                 // check for negative element volume
-                if (determ[k] <= Real_t(0.0)) lulesh_abort();
+                if (determ[k] <= Real_t(0.0)) lulesh_abort(VolumeError);
 
                 CalcElemNodeNormals( B[0] , B[1], B[2],
                         x_local, y_local, z_local );
@@ -1722,6 +1729,8 @@ void IntegrateStressForElems(Domain * domain)
         }
     }
 
+        const Real_t * domain_fx = domain->m_fx.data(); (void) domain_fx;
+
     // we need to copy the data out of the temporary
     // arrays used above into the final forces field
     Index_t numNode = domain->numNode();
@@ -1734,6 +1743,7 @@ void IntegrateStressForElems(Domain * domain)
             firstprivate(domain, b, numNode)                    \
             shared(NBS, fx_elem, fy_elem, fz_elem)              \
             DEPEND_OBJ(fx, b/NBS)                               \
+                    depend(out: domain_fx[b])                           \
             DEPEND_IN(dependencies_fx_fy_fz_elem + (b/NBS), 1)
         {
             Index_t start = b;
@@ -1895,6 +1905,9 @@ void CalcFBHourglassForceForElems( Domain * domain,
     const Real_t * v = domain->m_v.data();   (void) v;
     const Real_t * ss = domain->m_ss.data(); (void) ss;
 
+    const Real_t * domain_v = domain->m_v.data();   (void) domain_v;
+    const Real_t * domain_ss = domain->m_ss.data(); (void) domain_ss;
+
     for (Index_t b = 0; b < numElem ; b += EBS)
     {
         TASK_SET_COLOR(iter);
@@ -1910,6 +1923,8 @@ void CalcFBHourglassForceForElems( Domain * domain,
             DEPEND_OBJ(ss,     b/EBS)                                           \
             DEPEND_OBJ(v,      b/EBS)                                           \
             DEPEND_OBJ(determ, b/EBS)                                           \
+             depend(in:  determ[b], domain_v[b], domain_ss[b])                   \
+            depend(out: fx_elem_FBH[8*b]) \
             depend(out: fx_elem_FBH[8*b])                                       \
             DEPEND_IN(dependencies_domain_xd_yd_zd + (b/EBS), 1)
         {
@@ -2063,6 +2078,9 @@ void CalcFBHourglassForceForElems( Domain * domain,
         } /* task */
     } /* for b */
 
+    const Real_t * domain_fx    = domain->m_fx.data();  (void) domain_fx;
+
+
     // Collect the data from the local arrays into the final force array
     for (Index_t b = 0; b < numNode ; b += NBS)
     {
@@ -2072,7 +2090,7 @@ void CalcFBHourglassForceForElems( Domain * domain,
         # pragma omp task default(none)                             \
             firstprivate(domain, b, numNode)                        \
             shared(NBS, fx_elem_FBH, fy_elem_FBH, fz_elem_FBH)      \
-            DEPEND_OBJ(fx, b/NBS)                                   \
+                    depend(out: domain_fx[b])                               \
             DEPEND_IN(dependencies_fx_fy_fz_elem_FBH + (b/NBS), 1)
         {
             Index_t start = b;
@@ -2105,6 +2123,7 @@ void CalcHourglassControlForElems(Domain * domain, Real_t determ[], Real_t hgcoe
 {
     Index_t numElem = domain->numElem() ;
     const Real_t * v = domain->m_v.data();   (void) v;
+    const Real_t * domain_v = domain->m_v.data();   (void) domain_v;
 
     for (Index_t b = 0; b < numElem ; b += EBS)
     {
@@ -2119,6 +2138,8 @@ void CalcHourglassControlForElems(Domain * domain, Real_t determ[], Real_t hgcoe
                     x8n, y8n, z8n)                              \
             DEPEND_OBJ(v, b/EBS)                                \
             DEPEND_OBJ(determ, b/EBS)                           \
+                    depend(in:  domain_v[b])                            \
+            depend(out: determ[b])         \
             DEPEND_IN(dependencies_domain_x_y_z + (b/EBS), 1)
         {
             Index_t start = b;
@@ -2148,7 +2169,7 @@ void CalcHourglassControlForElems(Domain * domain, Real_t determ[], Real_t hgcoe
                 determ[i] = domain->volo(i) * domain->v(i);
 
                 /* Do a check for negative volumes */
-                if (domain->v(i) <= Real_t(0.0))   lulesh_abort();
+                if (domain->v(i) <= Real_t(0.0))   lulesh_abort(VolumeError);
             }
         }
     }
@@ -2189,6 +2210,8 @@ static void CalcForceForNodes(Domain * domain)
     CommRecv(domain, MSG_FX_FY_FZ);
 #endif
 
+        const Real_t * domain_fx = domain->m_fx.data(); (void) domain_fx;
+
     Index_t numNode = domain->numNode();
     for (Index_t b = 0; b < numNode ; b += NBS)
     {
@@ -2198,7 +2221,8 @@ static void CalcForceForNodes(Domain * domain)
         # pragma omp task default(none)         \
             firstprivate(domain, b, numNode)    \
             shared(NBS)                         \
-            DEPEND_OBJ(fx, b/NBS)
+            DEPEND_OBJ(fx, b/NBS) \
+            depend(out: domain_fx[b])
         {
             Index_t start = b;
             Index_t end = MIN(start + NBS, numNode);
@@ -2226,6 +2250,10 @@ static void CalcForceForNodes(Domain * domain)
 static
 void CalcAccelerationForNodes(Domain * domain)
 {
+        const Real_t * domain_fx    = domain->m_fx.data();  (void) domain_fx;
+    const Real_t * domain_xdd   = domain->m_xdd.data(); (void) domain_xdd;
+    const Real_t * domain_ydd   = domain->m_ydd.data(); (void) domain_ydd;
+    const Real_t * domain_zdd   = domain->m_zdd.data(); (void) domain_zdd;
     Index_t numNode = domain->numNode();
     for (Index_t b = 0; b < numNode ; b += NBS)
     {
@@ -2241,7 +2269,9 @@ void CalcAccelerationForNodes(Domain * domain)
             DEPEND_OBJ(fx,  b/NBS)                                  \
             DEPEND_OBJ(xdd, b/NBS)                                  \
             DEPEND_OBJ(ydd, b/NBS)                                  \
-            DEPEND_OBJ(zdd, b/NBS)
+            DEPEND_OBJ(zdd, b/NBS) \
+                    depend(in: domain_fx[b])                                \
+            depend(out: domain_xdd[b], domain_ydd[b], domain_zdd[b])
         {
             Index_t start = b;
             Index_t end = MIN(start + NBS, numNode);
@@ -2443,6 +2473,12 @@ void ApplyAccelerationBoundaryConditionsForNodes(Domain * domain)
 static
 void CalcVelocityForNodes(Domain * domain)
 {
+        const Real_t * domain_xd    = domain->m_xd.data();  (void) domain_xd;
+    const Real_t * domain_yd    = domain->m_yd.data();  (void) domain_yd;
+    const Real_t * domain_zd    = domain->m_zd.data();  (void) domain_zd;
+    const Real_t * domain_xdd   = domain->m_xdd.data(); (void) domain_xdd;
+    const Real_t * domain_ydd   = domain->m_ydd.data(); (void) domain_ydd;
+    const Real_t * domain_zdd   = domain->m_zdd.data(); (void) domain_zdd;
     Index_t numNode = domain->numNode();
     for (Index_t b = 0; b < numNode ; b += NBS)
     {
@@ -2464,7 +2500,10 @@ void CalcVelocityForNodes(Domain * domain)
             DEPEND_OBJ(zdd, b/NBS)              \
             DEPEND_OBJ(xd,  b/NBS)              \
             DEPEND_OBJ(yd,  b/NBS)              \
-            DEPEND_OBJ(zd,  b/NBS)
+            DEPEND_OBJ(zd,  b/NBS) \
+                    depend(in:                               \
+                            domain_xdd[b], domain_ydd[b], domain_zdd[b])    \
+            depend(inout:   domain_xd[b],  domain_yd[b],  domain_zd[b])
         {
             const Real_t dt = domain->deltatime();
             const Real_t u_cut = domain->u_cut() ;
@@ -2496,6 +2535,13 @@ void CalcVelocityForNodes(Domain * domain)
 static
 void CalcPositionForNodes(Domain * domain)
 {
+        const Real_t * domain_x     = domain->m_x.data();   (void) domain_x;
+    const Real_t * domain_y     = domain->m_y.data();   (void) domain_y;
+    const Real_t * domain_z     = domain->m_z.data();   (void) domain_z;
+    const Real_t * domain_xd    = domain->m_xd.data();  (void) domain_xd;
+    const Real_t * domain_yd    = domain->m_yd.data();  (void) domain_yd;
+    const Real_t * domain_zd    = domain->m_zd.data();  (void) domain_zd;
+
     Index_t numNode = domain->numNode();
     for (Index_t b = 0; b < numNode ; b += NBS)
     {
@@ -2517,7 +2563,9 @@ void CalcPositionForNodes(Domain * domain)
             DEPEND_OBJ(zd, b/NBS)                                   \
             DEPEND_OBJ(x,  b/NBS)                                   \
             DEPEND_OBJ(y,  b/NBS)                                   \
-            DEPEND_OBJ(z,  b/NBS)
+            DEPEND_OBJ(z,  b/NBS) \
+                    depend(in: domain_xd[b], domain_yd[b], domain_zd[b])   \
+            depend(out: domain_x[b], domain_y[b], domain_z[b])
         {
             const Real_t dt = domain->deltatime();
             Index_t start = b;
@@ -2782,6 +2830,10 @@ void CalcElemVelocityGradient( const Real_t* const xvel,
 static
 void CalcKinematicsForElems(Domain * domain)
 {
+    const Real_t * domain_v = domain->m_v.data();   (void) domain_v;
+    const Real_t * domain_delv      = domain->m_delv.data();    (void) domain_delv;
+    const Real_t * domain_arealg    = domain->m_arealg.data();  (void) domain_arealg;
+
     Index_t numElem = domain->numElem();
     for (Index_t b = 0; b < numElem ; b += EBS)
     {
@@ -2802,6 +2854,9 @@ void CalcKinematicsForElems(Domain * domain)
             DEPEND_OBJ(v, b/EBS)                                                    \
             DEPEND_OBJ(vnew, b/EBS)                                                 \
             DEPEND_OBJ(dxx, b/EBS)                                                  \
+                    depend(in:  domain_v[b])                           \
+            depend(out: vnew[b],            domain_delv[b],     domain_arealg[b],   \
+                        domain->m_dxx[b])  \
             DEPEND_IN(dependencies_domain_x_y_z + (b/EBS), 1)                       \
             DEPEND_IN(dependencies_domain_xd_yd_zd + (b/EBS), 1)
         {
@@ -2824,7 +2879,7 @@ void CalcKinematicsForElems(Domain * domain)
                 vnew[i] = MIN(MAX(relativeVolume, domain->eosvmin()), domain->eosvmax());
 
                 // See if any volumes are negative, and take appropriate action.
-                if (vnew[i] <= Real_t(0.0)) lulesh_abort();
+                if (vnew[i] <= Real_t(0.0)) lulesh_abort(VolumeError);
 
                 domain->delv(i) = relativeVolume - domain->v(i) ;
 
@@ -2877,6 +2932,9 @@ void CalcLagrangeElements(Domain * domain)
 
     CalcKinematicsForElems(domain);
 
+    const Real_t * domain_vdov  = domain->m_vdov.data();  (void) domain_vdov;
+
+
     // element loop to do some stuff not included in the elemlib function.
     for (Index_t b = 0; b < numElem ; b += EBS)
     {
@@ -2887,6 +2945,8 @@ void CalcLagrangeElements(Domain * domain)
         #pragma omp task default(none)          \
             firstprivate(domain, b, numElem)    \
             shared(EBS)                         \
+                    depend(inout:   domain->m_dxx[b])   \
+            depend(out:     domain_vdov[b]) \
             DEPEND_OBJ(dxx,  b/EBS)             \
             DEPEND_OBJ(vdov, b/EBS)
         {
@@ -2913,6 +2973,13 @@ void CalcLagrangeElements(Domain * domain)
 static
 void CalcMonotonicQGradientsForElems(Domain * domain)
 {
+        const Real_t * domain_delx_zeta = domain->m_delx_zeta;   (void) domain_delx_zeta;
+    const Real_t * domain_delx_xi   = domain->m_delx_xi;     (void) domain_delx_xi;
+    const Real_t * domain_delx_eta  = domain->m_delx_eta;    (void) domain_delx_eta;
+    const Real_t * domain_delv_zeta = domain->m_delv_zeta;   (void) domain_delv_zeta;
+    const Real_t * domain_delv_xi   = domain->m_delv_xi;     (void) domain_delv_xi;
+    const Real_t * domain_delv_eta  = domain->m_delv_eta;    (void) domain_delv_eta;
+
     Index_t numElem = domain->numElem();
 
     // element loop to do some stuff not included in the elemlib function.
@@ -2937,6 +3004,10 @@ void CalcMonotonicQGradientsForElems(Domain * domain)
             DEPEND_OBJ(delx_zeta, b/EBS)                                \
             DEPEND_OBJ(delv_zeta, b/EBS)                                \
             DEPEND_OBJ(vnew, b/EBS)                                     \
+                    depend(out: domain_delx_xi[b],      domain_delv_xi[b],      \
+                        domain_delx_eta[b],     domain_delv_eta[b],     \
+                        domain_delx_zeta[b],    domain_delv_zeta[b])    \
+            depend(in: vnew[b])  \
             DEPEND_IN(dependencies_domain_x_y_z + (b/EBS), 1)           \
             DEPEND_IN(dependencies_domain_xd_yd_zd + (b/EBS), 1)
 
@@ -3556,7 +3627,7 @@ void CalcEnergyForElems(Int_t r, Real_t* p_new, Real_t* e_new, Real_t* q_new,
             DEPEND_OBJ(qq_old[r], b/EBS)                                                        \
             DEPEND_OBJ(e_new[r],  b/EBS) \
                     depend(in: delvc[b], bvc[b], p_new[b], qq_old[b])                                   \
-            depend(inout: e_new[b])
+            depend(out: e_new[b])
         {
             Index_t start = b;
             Index_t end = MIN(start + EBS, regElemSize);
@@ -3618,7 +3689,7 @@ void CalcEnergyForElems(Int_t r, Real_t* p_new, Real_t* e_new, Real_t* q_new,
             DEPEND_OBJ(p_new[r], b/EBS)                                             \
             DEPEND_OBJ(q_new[r], b/EBS) \
                     depend(in: delvc[b], e_new[b], bvc[b], p_new[b])                        \
-            depend(inout: q_new[b])
+            depend(out: q_new[b])
         {
             Index_t start = b;
             Index_t end = MIN(start + EBS, regElemSize);
@@ -3884,7 +3955,7 @@ void EvalEOSForElems(Domain * domain, Int_t r, Int_t rep)
                 domain->q(elem) = q_new[i] ;
 
                 /* Don't allow excessive artificial viscosity */
-                if (domain->q(elem) > domain->qstop()) lulesh_abort();
+                if (domain->q(elem) > domain->qstop()) lulesh_abort(VolumeError);
             }
         }
     }
@@ -3905,6 +3976,8 @@ void ApplyMaterialPropertiesForElems(Domain * domain)
 
     if (numElem)
     {
+                const Real_t * domain_v = domain->m_v.data(); (void)domain_v;
+
         // element loop to do some stuff not included in the elemlib function.
         for (Index_t b = 0; b < numElem ; b += EBS)
         {
@@ -3917,14 +3990,15 @@ void ApplyMaterialPropertiesForElems(Domain * domain)
             #pragma omp task default(none)          \
                 firstprivate(domain, b, numElem)    \
                 shared(EBS)                         \
-                DEPEND_OBJ(v, b/EBS)
+                DEPEND_OBJ(v, b/EBS) \
+                            depend(in: domain_v[b])
             {
                 Index_t start = b;
                 Index_t end = MIN(start + EBS, numElem);
                 for (Index_t i = start ; i < end ; ++i)
                 {
                     Real_t vc = MIN(MAX(domain->v(i), domain->eosvmin()), domain->eosvmax());
-                    if (vc <= 0.)   lulesh_abort();
+                    if (vc <= 0.)   lulesh_abort(QStopError);
                 }
             }
         }
@@ -3956,6 +4030,8 @@ void UpdateVolumesForElems(Domain * domain)
     if (numElem)
     {
         const Real_t * v = domain->m_v.data(); (void)v;
+                const Real_t * domain_v = domain->m_v.data(); (void)domain_v;
+
         for (Index_t b = 0; b < numElem ; b += EBS)
         {
             // Bound the updated relative volumes with eosvmin/max
@@ -3966,7 +4042,8 @@ void UpdateVolumesForElems(Domain * domain)
                 firstprivate(domain, b, numElem, vnew)  \
                 shared(EBS)                             \
                 depend(in: vnew[b])                     \
-                DEPEND_OBJ(v, b/EBS)
+                DEPEND_OBJ(v, b/EBS) \
+                            depend(out: domain_v[b])
             {
                 Real_t v_cut = domain->v_cut();
                 Index_t start = b;
@@ -3978,7 +4055,7 @@ void UpdateVolumesForElems(Domain * domain)
                     domain->v(i) = tmpV ;
 
                     /* Do a check for negative volumes */
-                    if (domain->v(i) <= Real_t(0.0))   lulesh_abort();
+                    if (domain->v(i) <= Real_t(0.0))   lulesh_abort(VolumeError);
                 }
             }
         }
@@ -4188,7 +4265,7 @@ void CalcTimeConstraintsForElems(Domain * domain)
     # pragma omp task default(none)             \
         firstprivate(domain, numReg)            \
         shared(dt_reduction_courant)            \
-        depend(inout: dt_reduction_courant)     \
+        depend(out: dt_reduction_courant)     \
         DEPEND_OBJ(dtcourant, 0)
     {
         Real_t & dtcourant = domain->dtcourant();
@@ -4209,7 +4286,7 @@ void CalcTimeConstraintsForElems(Domain * domain)
     # pragma omp task default(none)         \
         firstprivate(domain, numReg)        \
         shared(dt_reduction_hydro)          \
-        depend(inout: dt_reduction_hydro)   \
+        depend(out: dt_reduction_hydro)   \
         DEPEND_OBJ(dthydro, 0)
     {
         Real_t & dthydro = domain->dthydro();
