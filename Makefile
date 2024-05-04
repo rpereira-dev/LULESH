@@ -110,7 +110,7 @@ omp-for-mpi: $(OMP_FOR_MPI_FOR_TARGET)
 OMP_T_CXX=clang++
 #OMP_T_CXX=mpc_cxx -cc=clang++
 
-OMP_T_CFLAGS=-DUSE_MPI=0 -DUSE_MPIX=0 -DUSE_MPC=0 -fopenmp
+OMP_T_CFLAGS=-DUSE_MPI=0 -DUSE_MPIX=0 -DUSE_MPC=0 -fopenmp -g
 OMP_T_LDFLAGS=
 
 %.omp-task.o: %.cc

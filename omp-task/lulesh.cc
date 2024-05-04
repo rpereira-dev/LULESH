@@ -301,36 +301,37 @@ static struct {
 
     omp_depend_t * fx;
 
-    omp_depend_t * determ;
-    omp_depend_t * ss;
-    omp_depend_t * vdov;
     omp_depend_t * arealg;
     omp_depend_t * delv;
-    omp_depend_t * v;
-    omp_depend_t * vnew;
-    omp_depend_t * delx_xi;
-    omp_depend_t * delv_xi;
-    omp_depend_t * delx_eta;
     omp_depend_t * delv_eta;
-    omp_depend_t * delx_zeta;
+    omp_depend_t * delv_xi;
     omp_depend_t * delv_zeta;
+    omp_depend_t * delx_eta;
+    omp_depend_t * delx_xi;
+    omp_depend_t * delx_zeta;
+    omp_depend_t * determ;
     omp_depend_t * dxx;
+    omp_depend_t * ss;
+    omp_depend_t * v;
+    omp_depend_t * vdov;
+    omp_depend_t * vnew;
 
-    omp_depend_t * compression;
-    omp_depend_t * bvc;
-    omp_depend_t * e_old;
-    omp_depend_t * e_new;
-    omp_depend_t * p_old;
-    omp_depend_t * p_new;
-    omp_depend_t * delvc;
-    omp_depend_t * q_new;
-    omp_depend_t * q_old;
-    omp_depend_t * work;
-    omp_depend_t * compHalfStep;
-    omp_depend_t * pHalfStep;
-    omp_depend_t * qq_old;
-    omp_depend_t * enewc;
-    omp_depend_t * pnewc;
+    // region elems
+    omp_depend_t ** bvc;
+    omp_depend_t ** compHalfStep;
+    omp_depend_t ** compression;
+    omp_depend_t ** delvc;
+    omp_depend_t ** e_new;
+    omp_depend_t ** e_old;
+    omp_depend_t ** pHalfStep;
+    omp_depend_t ** p_new;
+    omp_depend_t ** p_old;
+    omp_depend_t ** pbvc;
+    omp_depend_t ** q_new;
+    omp_depend_t ** q_old;
+    omp_depend_t ** ql_old;
+    omp_depend_t ** qq_old;
+    omp_depend_t ** work;
 
 } deps;
 
@@ -338,6 +339,11 @@ static struct {
 # define DEPOBJ_UPDATE(D, I, T)                                \
     do {                                                       \
         _Pragma(STRINGIFY(omp depobj(deps.D[I]) update(T)))    \
+    } while (0);
+
+# define DEPOBJ_ARRAY_ALLOC(D, N)                                       \
+    do {                                                                \
+        deps.D = (omp_depend_t **) malloc(sizeof(omp_depend_t *) * N);  \
     } while (0);
 
 # define DEPOBJ_ALLOC(D, N)                                         \
@@ -350,8 +356,11 @@ static struct {
         _Pragma(STRINGIFY(omp depobj(deps.D[I]) depend(__VA_ARGS__)))   \
     } while (0);
 
-# define DEPOBJ_SET_ELEMS(D, B) DEPOBJ_SET(D, B/EBS, in: D[B])
-# define DEPOBJ_SET_NODES(D, B) DEPOBJ_SET(D, B/NBS, in: D[B])
+# define DEPOBJ_ALLOC_REGION(D, R, N) DEPOBJ_ALLOC(D[R], N)
+
+# define DEPOBJ_SET_ELEMS(D, B)             DEPOBJ_SET(D,    B/EBS, in: D[B])
+# define DEPOBJ_SET_NODES(D, B)             DEPOBJ_SET(D,    B/NBS, in: D[B])
+# define DEPOBJ_SET_REGION_ELEMS(D, R, B)   DEPOBJ_SET(D[R], B/EBS, in: D[B])
 
 # define DEPEND_OBJ(D, I) depend(depobj: deps.D[I])
 
@@ -400,16 +409,6 @@ static task_dependency_t ** CalcSoundSpeedForElems_deps;
 
 static void init_deps(Domain * domain)
 {
-    // set single field dependency objects
-    DEPOBJ_ALLOC(deltatime, 1);
-    DEPOBJ_SET(deltatime, 0, in: domain->m_deltatime);
-
-    DEPOBJ_ALLOC(dtcourant, 1);
-    DEPOBJ_SET(dtcourant, 0, in: domain->m_dtcourant);
-
-    DEPOBJ_ALLOC(dthydro, 1);
-    DEPOBJ_SET(dthydro, 0, in: domain->m_dthydro);
-
     // dimensions
     const Index_t numElem = domain->numElem();
     const Index_t n_elem_blocks = numElem/EBS + 1;
@@ -448,6 +447,17 @@ static void init_deps(Domain * domain)
     const Real_t * delv_zeta = domain->m_delv_zeta;
     const Real_t * dxx       = domain->m_dxx;
 
+
+    // set single field dependency objects
+    DEPOBJ_ALLOC(deltatime, 1);
+    DEPOBJ_SET(deltatime, 0, in: domain->m_deltatime);
+
+    DEPOBJ_ALLOC(dtcourant, 1);
+    DEPOBJ_SET(dtcourant, 0, in: domain->m_dtcourant);
+
+    DEPOBJ_ALLOC(dthydro, 1);
+    DEPOBJ_SET(dthydro, 0, in: domain->m_dthydro);
+
     // allocate and set dependences objects
     DEPOBJ_ALLOC(e,         n_elem_blocks);
     DEPOBJ_ALLOC(sigxx,     n_elem_blocks);
@@ -465,24 +475,7 @@ static void init_deps(Domain * domain)
     DEPOBJ_ALLOC(delx_zeta, n_elem_blocks);
     DEPOBJ_ALLOC(delv_zeta, n_elem_blocks);
     DEPOBJ_ALLOC(dxx,       n_elem_blocks);
-
-    DEPOBJ_ALLOC(compression , n_elem_blocks);
-    DEPOBJ_ALLOC(bvc         , n_elem_blocks);
-    DEPOBJ_ALLOC(e_old       , n_elem_blocks);
-    DEPOBJ_ALLOC(e_new       , n_elem_blocks);
-    DEPOBJ_ALLOC(p_old       , n_elem_blocks);
-    DEPOBJ_ALLOC(p_new       , n_elem_blocks);
-    DEPOBJ_ALLOC(delvc       , n_elem_blocks);
-    DEPOBJ_ALLOC(q_new       , n_elem_blocks);
-    DEPOBJ_ALLOC(q_old       , n_elem_blocks);
-    DEPOBJ_ALLOC(work        , n_elem_blocks);
-    DEPOBJ_ALLOC(compHalfStep, n_elem_blocks);
-    DEPOBJ_ALLOC(pHalfStep   , n_elem_blocks);
-    DEPOBJ_ALLOC(qq_old      , n_elem_blocks);
-    DEPOBJ_ALLOC(enewc       , n_elem_blocks);
-    DEPOBJ_ALLOC(pnewc       , n_elem_blocks);
-
-    DEPOBJ_ALLOC(xyz,     n_elem_blocks);
+    DEPOBJ_ALLOC(xyz,       n_elem_blocks);
 
     for (Index_t b = 0; b < numElem ; b += EBS)
     {
@@ -508,22 +501,6 @@ static void init_deps(Domain * domain)
             DEPOBJ_SET_ELEMS(delv_zeta,    b);
             DEPOBJ_SET_ELEMS(dxx,          b);
 
-            // TODO : this is per region's elements ... not per elements overall : FIXME
-            DEPOBJ_SET_ELEMS(compression , b);
-            DEPOBJ_SET_ELEMS(bvc         , b);
-            DEPOBJ_SET_ELEMS(e_old       , b);
-            DEPOBJ_SET_ELEMS(e_new       , b);
-            DEPOBJ_SET_ELEMS(p_old       , b);
-            DEPOBJ_SET_ELEMS(p_new       , b);
-            DEPOBJ_SET_ELEMS(delvc       , b);
-            DEPOBJ_SET_ELEMS(q_new       , b);
-            DEPOBJ_SET_ELEMS(q_old       , b);
-            DEPOBJ_SET_ELEMS(work        , b);
-            DEPOBJ_SET_ELEMS(compHalfStep, b);
-            DEPOBJ_SET_ELEMS(pHalfStep   , b);
-            DEPOBJ_SET_ELEMS(qq_old      , b);
-            DEPOBJ_SET_ELEMS(enewc       , b);
-            DEPOBJ_SET_ELEMS(pnewc       , b);
 
             // build the indirection array for irregular dependencies
             // TODO
@@ -568,6 +545,85 @@ static void init_deps(Domain * domain)
         }
     }
 
+    // REGIONS
+    const Index_t numReg = domain->numReg();
+
+    DEPOBJ_ARRAY_ALLOC(bvc         , numReg);
+    DEPOBJ_ARRAY_ALLOC(compHalfStep, numReg);
+    DEPOBJ_ARRAY_ALLOC(compression , numReg);
+    DEPOBJ_ARRAY_ALLOC(delvc       , numReg);
+    DEPOBJ_ARRAY_ALLOC(e_new       , numReg);
+    DEPOBJ_ARRAY_ALLOC(e_old       , numReg);
+    DEPOBJ_ARRAY_ALLOC(pHalfStep   , numReg);
+    DEPOBJ_ARRAY_ALLOC(p_new       , numReg);
+    DEPOBJ_ARRAY_ALLOC(p_old       , numReg);
+    DEPOBJ_ARRAY_ALLOC(pbvc        , numReg);
+    DEPOBJ_ARRAY_ALLOC(q_new       , numReg);
+    DEPOBJ_ARRAY_ALLOC(q_old       , numReg);
+    DEPOBJ_ARRAY_ALLOC(ql_old      , numReg);
+    DEPOBJ_ARRAY_ALLOC(qq_old      , numReg);
+    DEPOBJ_ARRAY_ALLOC(work        , numReg);
+
+    for (Int_t r = 0 ; r < numReg ; ++r)
+    {
+        Index_t regElemSize = domain->regElemSize(r);
+        Index_t n_region_elem_blocks = regElemSize / EBS + 1;
+
+        DEPOBJ_ALLOC_REGION(bvc         , r, n_region_elem_blocks);
+        DEPOBJ_ALLOC_REGION(compHalfStep, r, n_region_elem_blocks);
+        DEPOBJ_ALLOC_REGION(compression , r, n_region_elem_blocks);
+        DEPOBJ_ALLOC_REGION(delvc       , r, n_region_elem_blocks);
+        DEPOBJ_ALLOC_REGION(e_new       , r, n_region_elem_blocks);
+        DEPOBJ_ALLOC_REGION(e_old       , r, n_region_elem_blocks);
+        DEPOBJ_ALLOC_REGION(pHalfStep   , r, n_region_elem_blocks);
+        DEPOBJ_ALLOC_REGION(p_new       , r, n_region_elem_blocks);
+        DEPOBJ_ALLOC_REGION(p_new       , r, n_region_elem_blocks);
+        DEPOBJ_ALLOC_REGION(p_old       , r, n_region_elem_blocks);
+        DEPOBJ_ALLOC_REGION(pbvc        , r, n_region_elem_blocks);
+        DEPOBJ_ALLOC_REGION(q_new       , r, n_region_elem_blocks);
+        DEPOBJ_ALLOC_REGION(q_old       , r, n_region_elem_blocks);
+        DEPOBJ_ALLOC_REGION(ql_old      , r, n_region_elem_blocks);
+        DEPOBJ_ALLOC_REGION(qq_old      , r, n_region_elem_blocks);
+        DEPOBJ_ALLOC_REGION(work        , r, n_region_elem_blocks);
+
+        Real_t * bvc            = bvcRegs[r];
+        Real_t * compHalfStep   = compHalfStepRegs[r];
+        Real_t * compression    = compressionRegs[r];
+        Real_t * delvc          = delvcRegs[r];
+        Real_t * e_new          = e_newRegs[r];
+        Real_t * e_old          = e_oldRegs[r];
+        Real_t * pHalfStep      = pHalfStepRegs[r];
+        Real_t * p_new          = p_newRegs[r];
+        Real_t * p_old          = p_oldRegs[r];
+        Real_t * pbvc           = pbvcRegs[r];
+        Real_t * q_new          = q_newRegs[r];
+        Real_t * q_old          = q_oldRegs[r];
+        Real_t * ql_old         = ql_oldRegs[r];
+        Real_t * qq_old         = qq_oldRegs[r];
+        Real_t * work           = workRegs[r];
+
+        for (Index_t b = 0; b < regElemSize ; b += EBS)
+        {
+            DEPOBJ_SET_REGION_ELEMS(bvc         , r, b);
+            DEPOBJ_SET_REGION_ELEMS(compHalfStep, r, b);
+            DEPOBJ_SET_REGION_ELEMS(compression , r, b);
+            DEPOBJ_SET_REGION_ELEMS(delvc       , r, b);
+            DEPOBJ_SET_REGION_ELEMS(e_new       , r, b);
+            DEPOBJ_SET_REGION_ELEMS(e_new       , r, b);
+            DEPOBJ_SET_REGION_ELEMS(e_old       , r, b);
+            DEPOBJ_SET_REGION_ELEMS(pHalfStep   , r, b);
+            DEPOBJ_SET_REGION_ELEMS(p_new       , r, b);
+            DEPOBJ_SET_REGION_ELEMS(p_old       , r, b);
+            DEPOBJ_SET_REGION_ELEMS(pbvc        , r, b);
+            DEPOBJ_SET_REGION_ELEMS(q_new       , r, b);
+            DEPOBJ_SET_REGION_ELEMS(q_old       , r, b);
+            DEPOBJ_SET_REGION_ELEMS(ql_old      , r, b);
+            DEPOBJ_SET_REGION_ELEMS(qq_old      , r, b);
+            DEPOBJ_SET_REGION_ELEMS(work        , r, b);
+        }
+    }
+
+    // NODES
     // set dependences object
     DEPOBJ_ALLOC(x,   n_node_blocks);
     DEPOBJ_ALLOC(y,   n_node_blocks);
@@ -604,6 +660,8 @@ static void init_deps(Domain * domain)
             DEPOBJ_SET_NODES(fx, b);
         }
     }
+
+
 
     // OLD CODE
     dependencies_domain_x_y_z       = (task_dependency_t *) malloc(sizeof(task_dependency_t) * n_elem_blocks);
@@ -669,7 +727,7 @@ static void init_deps(Domain * domain)
     {
         TASK_SET_COLOR(iter);
         TASK_SET_LABEL("init");
-        # pragma omp task
+        // # pragma omp task
         {
             std::map<Index_t, bool> blocks;
             Index_t start = b;
@@ -724,7 +782,7 @@ static void init_deps(Domain * domain)
     {
         TASK_SET_COLOR(iter);
         TASK_SET_LABEL("init");
-        # pragma omp task
+        // # pragma omp task
         {
             std::map<Index_t, bool> blocks_x, blocks_y, blocks_z;
             Index_t start = b;
@@ -791,7 +849,6 @@ static void init_deps(Domain * domain)
     }
 
     // dt time courant and hydro deps
-    const Index_t numReg = domain->numReg();
     const size_t size = sizeof(task_dependency_t *) * numReg;
     dt_courant_deps = (task_dependency_t **) malloc(size);
     dt_hydro_deps = (task_dependency_t **) malloc(size);
@@ -1122,6 +1179,9 @@ static void init_deps(Domain * domain)
 
         } /* b */
     }
+
+
+
 
     if (myRank == 0) printf("numElem=%d, elemBlockSize=%d, tel=%d\n", numElem, EBS, opts.tel);
     if (myRank == 0) printf("numNode=%d, nodeBlockSize=%d, tnl=%d\n", numNode, NBS, opts.tnl);
@@ -3267,8 +3327,8 @@ void CalcQForElems(Domain * domain)
 /******************************************/
 
 static inline
-void CalcPressureForElems(Real_t* p_new, Real_t* bvc,
-        Real_t* pbvc, Real_t* e_old,
+void CalcPressureForElems(Int_t r, Real_t* p_new, Real_t* bvc,
+        Real_t* pbvc, Real_t* e_new,
         Real_t* compression, Real_t *vnew,
         Real_t pmin,
         Real_t p_cut, Real_t eosvmax,
@@ -3278,13 +3338,15 @@ void CalcPressureForElems(Real_t* p_new, Real_t* bvc,
     {
         TASK_SET_COLOR(iter);
         TASK_SET_LABEL("CalcPressureForElems1");
-        DEPOBJ_UPDATE(compression, b/EBS, in);
-        DEPOBJ_UPDATE(bvc,         b/EBS, out);
+        DEPOBJ_UPDATE(compression[r], b/EBS, in);
+        DEPOBJ_UPDATE(bvc[r],         b/EBS, out);
         # pragma omp task default(none)                                         \
             firstprivate(b, regElemSize, regElemList, compression, bvc, pbvc)   \
             shared(EBS)                                                         \
-            DEPEND_OBJ(compression, b/EBS)                                      \
-            DEPEND_OBJ(bvc, b/EBS)
+            DEPEND_OBJ(compression[r], b/EBS)                                   \
+            DEPEND_OBJ(bvc[r], b/EBS)                                           \
+            depend(in: compression[b])                                          \
+            depend(out: bvc[b])
         {
             Real_t c1s = Real_t(2.0)/Real_t(3.0) ;
             Index_t start = b;
@@ -3301,22 +3363,24 @@ void CalcPressureForElems(Real_t* p_new, Real_t* bvc,
     {
         TASK_SET_COLOR(iter);
         TASK_SET_LABEL("CalcPressureForElems2");
-        DEPOBJ_UPDATE(bvc,   b/EBS, in);
-        DEPOBJ_UPDATE(e_old, b/EBS, in);
-        DEPOBJ_UPDATE(p_new, b/EBS, out);
+        DEPOBJ_UPDATE(bvc[r],   b/EBS, in);
+        DEPOBJ_UPDATE(e_new[r], b/EBS, in);
+        DEPOBJ_UPDATE(p_new[r], b/EBS, out);
         # pragma omp task default(none)                             \
             firstprivate(   b, regElemSize, regElemList, p_new,     \
-                            bvc, e_old, p_cut, pmin, eosvmax, vnew) \
+                            bvc, e_new, p_cut, pmin, eosvmax, vnew) \
             shared(EBS)                                             \
-            DEPEND_OBJ(bvc, b/EBS)                                  \
-            DEPEND_OBJ(e_old, b/EBS)                                \
-            DEPEND_OBJ(p_new, b/EBS)
+            DEPEND_OBJ(bvc[r], b/EBS)                               \
+            DEPEND_OBJ(e_new[r], b/EBS)                             \
+            DEPEND_OBJ(p_new[r], b/EBS)                             \
+                    depend(in: bvc[b], e_new[b])                            \
+            depend(out: p_new[b])
         {
             Index_t start = b;
             Index_t end = MIN(start + EBS, regElemSize);
             for (Index_t i = start ; i < end ; ++i)
             {
-                p_new[i] = bvc[i] * e_old[i] ;
+                p_new[i] = bvc[i] * e_new[i] ;
 
                 if    (FABS(p_new[i]) <  p_cut   )
                     p_new[i] = Real_t(0.0) ;
@@ -3335,7 +3399,7 @@ void CalcPressureForElems(Real_t* p_new, Real_t* bvc,
 /******************************************/
 
 static inline
-void CalcEnergyForElems(Real_t* p_new, Real_t* e_new, Real_t* q_new,
+void CalcEnergyForElems(Int_t r, Real_t* p_new, Real_t* e_new, Real_t* q_new,
         Real_t* bvc, Real_t* pbvc,
         Real_t* p_old, Real_t* e_old, Real_t* q_old,
         Real_t* compression, Real_t* compHalfStep,
@@ -3351,21 +3415,23 @@ void CalcEnergyForElems(Real_t* p_new, Real_t* e_new, Real_t* q_new,
     {
         TASK_SET_COLOR(iter);
         TASK_SET_LABEL("CalcEnergyForElems1");
-        DEPOBJ_UPDATE(e_old, b/EBS, in);
-        DEPOBJ_UPDATE(delvc, b/EBS, in);
-        DEPOBJ_UPDATE(p_old, b/EBS, in);
-        DEPOBJ_UPDATE(q_old, b/EBS, in);
-        DEPOBJ_UPDATE(work,  b/EBS, in);
-        DEPOBJ_UPDATE(e_new, b/EBS, out);
+        DEPOBJ_UPDATE(e_old[r], b/EBS, in);
+        DEPOBJ_UPDATE(delvc[r], b/EBS, in);
+        DEPOBJ_UPDATE(p_old[r], b/EBS, in);
+        DEPOBJ_UPDATE(q_old[r], b/EBS, in);
+        DEPOBJ_UPDATE(work[r],  b/EBS, in);
+        DEPOBJ_UPDATE(e_new[r], b/EBS, out);
         # pragma omp task default(none)                                                 \
             firstprivate(b, regElemSize, delvc, e_old, p_old, q_old, work, e_new, emin) \
             shared(EBS)                                                                 \
-            DEPEND_OBJ(e_old, b/EBS)                                                    \
-            DEPEND_OBJ(delvc, b/EBS)                                                    \
-            DEPEND_OBJ(p_old, b/EBS)                                                    \
-            DEPEND_OBJ(q_old, b/EBS)                                                    \
-            DEPEND_OBJ(work,  b/EBS)                                                    \
-            DEPEND_OBJ(e_new, b/EBS)
+            DEPEND_OBJ(e_old[r], b/EBS)                                                 \
+            DEPEND_OBJ(delvc[r], b/EBS)                                                 \
+            DEPEND_OBJ(p_old[r], b/EBS)                                                 \
+            DEPEND_OBJ(q_old[r], b/EBS)                                                 \
+            DEPEND_OBJ(work[r],  b/EBS)                                                 \
+            DEPEND_OBJ(e_new[r], b/EBS) \
+            depend(in: e_old[b], delvc[b], p_old[b], q_old[b], work[b])                 \
+            depend(out: e_new[b])
         {
             Index_t start = b;
             Index_t end = MIN(start + EBS, regElemSize);
@@ -3381,32 +3447,33 @@ void CalcEnergyForElems(Real_t* p_new, Real_t* e_new, Real_t* q_new,
         }
     }
 
-    CalcPressureForElems(pHalfStep, bvc, pbvc, e_new, compHalfStep, vnew,
+    CalcPressureForElems(r, pHalfStep, bvc, pbvc, e_new, compHalfStep, vnew,
             pmin, p_cut, eosvmax, regElemSize, regElemList);
 
     for (Index_t b = 0; b < regElemSize ; b += EBS)
     {
         TASK_SET_COLOR(iter);
         TASK_SET_LABEL("CalcEnergyForElems2");
-        DEPOBJ_UPDATE(compHalfStep, b/EBS, in);
-        DEPOBJ_UPDATE(delvc,        b/EBS, in);
-        DEPOBJ_UPDATE(e_new,        b/EBS, in);
-        DEPOBJ_UPDATE(bvc,          b/EBS, in);
-        DEPOBJ_UPDATE(pHalfStep,    b/EBS, in);
-        DEPOBJ_UPDATE(e_new,        b/EBS, out);
-        DEPOBJ_UPDATE(q_new,        b/EBS, out);
+        DEPOBJ_UPDATE(compHalfStep[r], b/EBS, in);
+        DEPOBJ_UPDATE(delvc[r],        b/EBS, in);
+        DEPOBJ_UPDATE(e_new[r],        b/EBS, in);
+        DEPOBJ_UPDATE(bvc[r],          b/EBS, in);
+        DEPOBJ_UPDATE(pHalfStep[r],    b/EBS, in);
+        DEPOBJ_UPDATE(e_new[r],        b/EBS, out);
+        DEPOBJ_UPDATE(q_new[r],        b/EBS, out);
         # pragma omp task default(none)                                                     \
             firstprivate(   b, regElemSize, compHalfStep, q_new, pbvc, e_new,               \
                             delvc, p_old, q_old, pHalfStep, bvc, rho0, ql_old, qq_old)      \
             shared(EBS)                                                                     \
-            DEPEND_OBJ(compHalfStep, b/EBS)                                                 \
-            DEPEND_OBJ(delvc, b/EBS)                                                        \
-            DEPEND_OBJ(e_new, b/EBS)                                                        \
-            DEPEND_OBJ(bvc, b/EBS)                                                          \
-            DEPEND_OBJ(pHalfStep, b/EBS)                                                    \
-            DEPEND_OBJ(delvc, b/EBS)                                                        \
-            DEPEND_OBJ(e_new, b/EBS)                                                        \
-            DEPEND_OBJ(q_new, b/EBS)
+            DEPEND_OBJ(compHalfStep[r], b/EBS)                                              \
+            DEPEND_OBJ(delvc[r], b/EBS)                                                     \
+            DEPEND_OBJ(bvc[r], b/EBS)                                                       \
+            DEPEND_OBJ(pHalfStep[r], b/EBS)                                                 \
+            DEPEND_OBJ(delvc[r], b/EBS)                                                     \
+            DEPEND_OBJ(e_new[r], b/EBS)                                                     \
+            DEPEND_OBJ(q_new[r], b/EBS) \
+                    depend(in: compHalfStep[b], delvc[b], e_new[b], bvc[b], pHalfStep[b], delvc[b]) \
+            depend(out: q_new[b], e_new[b])
         {
             Index_t start = b;
             Index_t end = MIN(start + EBS, regElemSize);
@@ -3441,13 +3508,15 @@ void CalcEnergyForElems(Real_t* p_new, Real_t* e_new, Real_t* q_new,
     {
         TASK_SET_COLOR(iter);
         TASK_SET_LABEL("CalcEnergyForElems3");
-        DEPOBJ_UPDATE(work,  b/EBS, in);
-        DEPOBJ_UPDATE(e_new, b/EBS, out);
+        DEPOBJ_UPDATE(work[r],  b/EBS, in);
+        DEPOBJ_UPDATE(e_new[r], b/EBS, out);
         # pragma omp task default(none)                             \
             firstprivate(b, regElemSize, e_new, work, e_cut, emin)  \
             shared(EBS)                                             \
-            DEPEND_OBJ(work, b/EBS)                                 \
-            DEPEND_OBJ(e_new, b/EBS)
+            DEPEND_OBJ(work[r], b/EBS)                              \
+            DEPEND_OBJ(e_new[r], b/EBS) \
+                    depend(in: work[b])                                     \
+            depend(out: e_new[b])
         {
             Index_t start = b;
             Index_t end = MIN(start + EBS, regElemSize);
@@ -3465,27 +3534,29 @@ void CalcEnergyForElems(Real_t* p_new, Real_t* e_new, Real_t* q_new,
         }
     }
 
-    CalcPressureForElems(p_new, bvc, pbvc, e_new, compression, vnew,
+    CalcPressureForElems(r, p_new, bvc, pbvc, e_new, compression, vnew,
             pmin, p_cut, eosvmax, regElemSize, regElemList);
 
     for (Index_t b = 0; b < regElemSize ; b += EBS)
     {
         TASK_SET_COLOR(iter);
         TASK_SET_LABEL("CalcEnergyForElems4");
-        DEPOBJ_UPDATE(delvc,  b/EBS, in);
-        DEPOBJ_UPDATE(bvc,    b/EBS, in);
-        DEPOBJ_UPDATE(p_new,  b/EBS, in);
-        DEPOBJ_UPDATE(qq_old, b/EBS, in);
-        DEPOBJ_UPDATE(e_new,  b/EBS, out);
+        DEPOBJ_UPDATE(delvc[r],  b/EBS, in);
+        DEPOBJ_UPDATE(bvc[r],    b/EBS, in);
+        DEPOBJ_UPDATE(p_new[r],  b/EBS, in);
+        DEPOBJ_UPDATE(qq_old[r], b/EBS, in);
+        DEPOBJ_UPDATE(e_new[r],  b/EBS, out);
         # pragma omp task default(none)                                                         \
             firstprivate(   b, regElemSize, regElemList, delvc, pbvc, e_new, bvc, p_new, rho0,  \
                             ql_old, qq_old, p_old, pHalfStep, e_cut, emin, q_old, q_new, vnew)  \
             shared(EBS)                                                                         \
-            DEPEND_OBJ(delvc,  b/EBS)                                                           \
-            DEPEND_OBJ(bvc,    b/EBS)                                                           \
-            DEPEND_OBJ(p_new,  b/EBS)                                                           \
-            DEPEND_OBJ(qq_old, b/EBS)                                                           \
-            DEPEND_OBJ(e_new,  b/EBS)
+            DEPEND_OBJ(delvc[r],  b/EBS)                                                        \
+            DEPEND_OBJ(bvc[r],    b/EBS)                                                        \
+            DEPEND_OBJ(p_new[r],  b/EBS)                                                        \
+            DEPEND_OBJ(qq_old[r], b/EBS)                                                        \
+            DEPEND_OBJ(e_new[r],  b/EBS) \
+                    depend(in: delvc[b], bvc[b], p_new[b], qq_old[b])                                   \
+            depend(inout: e_new[b])
         {
             Index_t start = b;
             Index_t end = MIN(start + EBS, regElemSize);
@@ -3525,27 +3596,29 @@ void CalcEnergyForElems(Real_t* p_new, Real_t* e_new, Real_t* q_new,
         }
     }
 
-    CalcPressureForElems(p_new, bvc, pbvc, e_new, compression, vnew,
+    CalcPressureForElems(r, p_new, bvc, pbvc, e_new, compression, vnew,
             pmin, p_cut, eosvmax, regElemSize, regElemList);
 
     for (Index_t b = 0; b < regElemSize ; b += EBS)
     {
         TASK_SET_COLOR(iter);
         TASK_SET_LABEL("CalcEnergyForElems5");
-        DEPOBJ_UPDATE(delvc, b/EBS, in)
-        DEPOBJ_UPDATE(e_new, b/EBS, in)
-        DEPOBJ_UPDATE(bvc,   b/EBS, in)
-        DEPOBJ_UPDATE(p_new, b/EBS, in)
-        DEPOBJ_UPDATE(q_new, b/EBS, out);
+        DEPOBJ_UPDATE(delvc[r], b/EBS, in)
+        DEPOBJ_UPDATE(e_new[r], b/EBS, in)
+        DEPOBJ_UPDATE(bvc[r],   b/EBS, in)
+        DEPOBJ_UPDATE(p_new[r], b/EBS, in)
+        DEPOBJ_UPDATE(q_new[r], b/EBS, out);
         # pragma omp task default(none)                                             \
             firstprivate(   b, regElemSize, regElemList, pbvc, e_new, bvc, p_new,   \
                             rho0, ql_old, qq_old, q_new, delvc, q_cut, vnew)        \
             shared(EBS)                                                             \
-            DEPEND_OBJ(delvc, b/EBS)                                                \
-            DEPEND_OBJ(e_new, b/EBS)                                                \
-            DEPEND_OBJ(bvc,   b/EBS)                                                \
-            DEPEND_OBJ(p_new, b/EBS)                                                \
-            DEPEND_OBJ(q_new, b/EBS)
+            DEPEND_OBJ(delvc[r], b/EBS)                                             \
+            DEPEND_OBJ(e_new[r], b/EBS)                                             \
+            DEPEND_OBJ(bvc[r],   b/EBS)                                             \
+            DEPEND_OBJ(p_new[r], b/EBS)                                             \
+            DEPEND_OBJ(q_new[r], b/EBS) \
+                    depend(in: delvc[b], e_new[b], bvc[b], p_new[b])                        \
+            depend(inout: q_new[b])
         {
             Index_t start = b;
             Index_t end = MIN(start + EBS, regElemSize);
@@ -3576,8 +3649,8 @@ void CalcEnergyForElems(Real_t* p_new, Real_t* e_new, Real_t* q_new,
 
 static inline
 void CalcSoundSpeedForElems(Domain * domain,
-        Real_t *vnew, Real_t rho0, Real_t *enewc,
-        Real_t *pnewc, Real_t *pbvc,
+        Real_t *vnew, Real_t rho0, Real_t *e_new,
+        Real_t *p_new, Real_t *pbvc,
         Real_t *bvc,
         Index_t regElemSize, Index_t *regElemList,
         Index_t r)
@@ -3586,15 +3659,16 @@ void CalcSoundSpeedForElems(Domain * domain,
     {
         TASK_SET_COLOR(iter);
         TASK_SET_LABEL("CalcSoundSpeedForElems");
-        DEPOBJ_UPDATE(enewc, b/EBS, in);
-        DEPOBJ_UPDATE(bvc,   b/EBS, in);
-        DEPOBJ_UPDATE(pnewc, b/EBS, in);
+        DEPOBJ_UPDATE(e_new[r], b/EBS, in);
+        DEPOBJ_UPDATE(bvc[r],   b/EBS, in);
+        DEPOBJ_UPDATE(p_new[r], b/EBS, in);
         # pragma omp task default(none)                                                             \
-            firstprivate(b, regElemSize, regElemList, pbvc, enewc, vnew, bvc, pnewc, rho0, domain)  \
+            firstprivate(b, regElemSize, regElemList, pbvc, e_new, vnew, bvc, p_new, rho0, domain)  \
             shared(EBS)                                                                             \
-            DEPEND_OBJ(enewc, b/EBS)                                                                \
-            DEPEND_OBJ(bvc,   b/EBS)                                                                \
-            DEPEND_OBJ(pnewc, b/EBS)                                                                \
+            DEPEND_OBJ(e_new[r], b/EBS)                                                             \
+            DEPEND_OBJ(bvc[r],   b/EBS)                                                             \
+            DEPEND_OBJ(p_new[r], b/EBS)                                                             \
+            depend(in: e_new[b], bvc[b], p_new[b])                                                  \
             DEPEND_INOUTSET(CalcSoundSpeedForElems_deps[r] + b/EBS, 1)
         {
             Index_t start = b;
@@ -3602,8 +3676,8 @@ void CalcSoundSpeedForElems(Domain * domain,
             for (Index_t i = start ; i < end ; ++i)
             {
                 Index_t elem = regElemList[i];
-                Real_t ssTmp = (pbvc[i] * enewc[i] + vnew[elem] * vnew[elem] *
-                        bvc[i] * pnewc[i]) / rho0;
+                Real_t ssTmp = (pbvc[i] * e_new[i] + vnew[elem] * vnew[elem] *
+                        bvc[i] * p_new[i]) / rho0;
                 if (ssTmp <= Real_t(.1111111e-36)) {
                     ssTmp = Real_t(.3333333e-18);
                 }
@@ -3782,7 +3856,7 @@ void EvalEOSForElems(Domain * domain, Int_t r, Int_t rep)
             }
         }
 
-        CalcEnergyForElems(p_new, e_new, q_new, bvc, pbvc,
+        CalcEnergyForElems(r, p_new, e_new, q_new, bvc, pbvc,
                 p_old, e_old,  q_old, compression, compHalfStep,
                 vnew, work,  delvc, pmin,
                 p_cut, e_cut, q_cut, emin,
