@@ -367,14 +367,14 @@ void TimeIncrement(Domain * domain)
         shared(TASK_SHARED)                                     \
         firstprivate(domain)                                    \
         depend(in:      domain->m_dtcourant, domain->m_dthydro) \
-        depend(inout:   domain->m_deltatime)                    \
+        depend(out:   domain->m_deltatime)                      \
         untied                                                  \
         priority(PRIORITY_REDUCE)
 #else
     # pragma omp task default(none)                             \
         firstprivate(domain)                                    \
         depend(in:      domain->m_dtcourant, domain->m_dthydro) \
-        depend(inout:   domain->m_deltatime)                    \
+        depend(out:   domain->m_deltatime)                      \
         priority(PRIORITY_REDUCE)
 #endif
     {
@@ -1496,7 +1496,7 @@ void CalcVelocityForNodes(Domain * domain)
             shared(NBS)                                                     \
             depend(in:      domain->m_deltatime,                            \
                             domain_xdd[b], domain_ydd[b], domain_zdd[b])    \
-            depend(inout:   domain_xd[b],  domain_yd[b],  domain_zd[b])
+            depend(out:   domain_xd[b],  domain_yd[b],  domain_zd[b])
         {
             const Real_t dt = domain->deltatime();
             const Real_t u_cut = domain->u_cut() ;
@@ -1913,7 +1913,7 @@ void CalcLagrangeElements(Domain * domain)
         #pragma omp task default(none)          \
             firstprivate(domain, b, numElem)    \
             shared(EBS)                         \
-            depend(inout:   domain->m_dxx[b])   \
+            depend(out:   domain->m_dxx[b])     \
             depend(out:     domain_vdov[b])
         {
             Index_t start = b;
@@ -2532,7 +2532,7 @@ void CalcEnergyForElems(Real_t* p_new, Real_t* e_new, Real_t* q_new,
                             ql_old, qq_old, p_old, pHalfStep, e_cut, emin, q_old, q_new, vnew)  \
             shared(EBS)                                                                         \
             depend(in: delvc[b], bvc[b], p_new[b], qq_old[b])                                   \
-            depend(inout: e_new[b])
+            depend(out: e_new[b])
         {
             Index_t start = b;
             Index_t end = MIN(start + EBS, regElemSize);
@@ -2584,7 +2584,7 @@ void CalcEnergyForElems(Real_t* p_new, Real_t* e_new, Real_t* q_new,
                             rho0, ql_old, qq_old, q_new, delvc, q_cut, vnew)        \
             shared(EBS)                                                             \
             depend(in: delvc[b], e_new[b], bvc[b], p_new[b])                        \
-            depend(inout: q_new[b])
+            depend(out: q_new[b])
         {
             Index_t start = b;
             Index_t end = MIN(start + EBS, regElemSize);
@@ -3120,7 +3120,7 @@ void CalcTimeConstraintsForElems(Domain * domain)
     TASK_SET_LABEL("CalcTimeConstraintsForElems_init");
     # pragma omp task default(none)                             \
         firstprivate(domain)                                    \
-        depend(inout: domain->m_dtcourant, domain->m_dthydro)
+        depend(out: domain->m_dtcourant, domain->m_dthydro)
     {
         domain->dtcourant() = 1.0e+20;
         domain->dthydro()   = 1.0e+20;
@@ -3138,10 +3138,10 @@ void CalcTimeConstraintsForElems(Domain * domain)
      // reduce minimum dt courant and hydro of each region
      TASK_SET_COLOR(iter);
      TASK_SET_LABEL("CalcTimeConstraintsForElems_reduce_courant");
-     # pragma omp task default(none)             \
-         firstprivate(domain, numReg)            \
-         shared(dt_reduction_courant)            \
-         depend(inout: dt_reduction_courant)     \
+     # pragma omp task default(none)            \
+         firstprivate(domain, numReg)           \
+         shared(dt_reduction_courant)           \
+         depend(out: dt_reduction_courant)      \
          depend(out: domain->m_dtcourant)
      {
          Real_t & dtcourant = domain->dtcourant();
@@ -3158,10 +3158,10 @@ void CalcTimeConstraintsForElems(Domain * domain)
 
      TASK_SET_COLOR(iter);
      TASK_SET_LABEL("CalcTimeConstraintsForElems_reduce_hydro");
-     # pragma omp task default(none)         \
-         firstprivate(domain, numReg)        \
-         shared(dt_reduction_hydro)          \
-         depend(inout: dt_reduction_hydro)   \
+     # pragma omp task default(none)        \
+         firstprivate(domain, numReg)       \
+         shared(dt_reduction_hydro)         \
+         depend(out: dt_reduction_hydro)    \
          depend(out: domain->m_dthydro)
      {
          Real_t & dthydro = domain->dthydro();
@@ -4018,6 +4018,8 @@ static void init_deps(Domain * domain)
     if (myRank == 0) printf("numNode=%d, nodeBlockSize=%d, tnl=%d\n", numNode, NBS, opts.tnl);
     if (myRank == 0) printf("nodesPerFaceRequest=%d, requestsPerFace=%d\n", domain->m_npfr, domain->m_rpf);
     if (myRank == 0) printf("nodesPerEdgeRequest=%d, requestsPerEdge=%d\n", domain->m_nper, domain->m_rpe);
+
+    # pragma omp taskwait
 }
 
 /******************************************/
@@ -4185,7 +4187,7 @@ int main(int argc, char *argv[])
 
             TASK_SET_COLOR(iter);
             TASK_SET_LABEL("Compute Elapsed Time");
-            # pragma omp task default(shared) if(0)
+            // # pragma omp task default(shared) if(0)
             {
                 // Use reduced max elapsed time
 #if USE_MPI
@@ -4202,7 +4204,7 @@ int main(int argc, char *argv[])
             {
                 TASK_SET_COLOR(iter);
                 TASK_SET_LABEL("Dump to viz");
-                # pragma omp task default(shared) if(0)
+                // # pragma omp task default(shared) if(0)
                 {
                     DumpToVisit(domain, opts.numFiles, myRank, numRanks) ;
                 }
@@ -4212,7 +4214,7 @@ int main(int argc, char *argv[])
             {
                 TASK_SET_COLOR(iter);
                 TASK_SET_LABEL("Verify result");
-                # pragma omp task default(shared) if(0)
+                // # pragma omp task default(shared) if(0)
                 {
                     int numThreads = omp_get_num_threads();
                     VerifyAndWriteFinalOutput(elapsed_timeG, domain, opts.nx, numRanks, numThreads);
@@ -4222,7 +4224,7 @@ int main(int argc, char *argv[])
 
             TASK_SET_COLOR(iter);
             TASK_SET_LABEL("Deallocate");
-            # pragma omp task default(shared) if(0)
+            // # pragma omp task default(shared) if(0)
             {
                 deallocate(domain);
                 deinit_deps(domain);
