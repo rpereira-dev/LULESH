@@ -2462,7 +2462,7 @@ void CalcEnergyForElems(Real_t* p_new, Real_t* e_new, Real_t* q_new,
             firstprivate(   b, regElemSize, compHalfStep, q_new, pbvc, e_new,               \
                             delvc, p_old, q_old, pHalfStep, bvc, rho0, ql_old, qq_old)      \
             shared(EBS)                                                                     \
-            depend(in: compHalfStep[b], delvc[b], e_new[b], bvc[b], pHalfStep[b], delvc[b]) \
+            depend(in: compHalfStep[b], delvc[b], bvc[b], pHalfStep[b], delvc[b])           \
             depend(out: q_new[b], e_new[b])
         {
             Index_t start = b;
@@ -4157,7 +4157,7 @@ int main(int argc, char *argv[])
             // BEGIN timestep to solution */
             start = lulesh_timer();
 
-            # pragma omp taskgroup
+            // # pragma omp taskgroup
             {
                 //debug to see region sizes
                 //for(Int_t i = 0; i < domain->numReg(); i++)
@@ -4173,6 +4173,8 @@ int main(int argc, char *argv[])
                 if (myRank == 0) printf("Graph generated in %lf s.\n", tgraph);
                 if (myRank == 0) printf("Graph 1st iteration generated in %lf s.\n", tgraph0);
             } /* taskgroup (implicit barrier) */
+
+            # pragma omp taskwait
         } /* single */
 
         # pragma omp single
